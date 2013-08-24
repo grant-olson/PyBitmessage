@@ -1032,7 +1032,7 @@ class receiveDataThread(threading.Thread):
                     subject = self.addMailingListNameToSubject(
                         subject, mailingListName)
                     # Let us now send this message out as a broadcast
-                    message = time.strftime("%a, %Y-%m-%d %H:%M:%S UTC", time.gmtime(
+                    message = 'DevTalk Mailing List.  Learn More About DevTalk -> http://pastebin.com/raw.php?i=zT1fbysL\n' + time.strftime("%a, %Y-%m-%d %H:%M:%S UTC", time.gmtime(
                     )) + '   Message ostensibly from ' + fromAddress + ':\n\n' + body
                     fromAddress = toAddress  # The fromAddress for the broadcast that we are about to send is the toAddress (my address) for the msg message we are currently processing.
                     ackdata = OpenSSL.rand(
