@@ -118,6 +118,10 @@ class MyForm(QtGui.QMainWindow):
 
         self.ui.labelSendBroadcastWarning.setVisible(False)
 
+        self.timer = QtCore.QTimer()
+        self.timer.start(2000) # milliseconds
+        QtCore.QObject.connect(self.timer, QtCore.SIGNAL("timeout()"), self.runEveryTwoSeconds)
+
         # FILE MENU and other buttons
         QtCore.QObject.connect(self.ui.actionExit, QtCore.SIGNAL(
             "triggered()"), self.quit)
@@ -347,16 +351,7 @@ class MyForm(QtGui.QMainWindow):
         self.loadSent()
 
         # Initialize the address book
-        queryreturn = sqlQuery('SELECT * FROM addressbook')
-        for row in queryreturn:
-            label, address = row
-            self.ui.tableWidgetAddressBook.insertRow(0)
-            newItem = QtGui.QTableWidgetItem(unicode(label, 'utf-8'))
-            self.ui.tableWidgetAddressBook.setItem(0, 0, newItem)
-            newItem = QtGui.QTableWidgetItem(address)
-            newItem.setFlags(
-                QtCore.Qt.ItemIsSelectable | QtCore.Qt.ItemIsEnabled)
-            self.ui.tableWidgetAddressBook.setItem(0, 1, newItem)
+        self.rerenderAddressBook()
 
         # Initialize the Subscriptions
         self.rerenderSubscriptions()
@@ -424,9 +419,15 @@ class MyForm(QtGui.QMainWindow):
         QtCore.QObject.connect(self.UISignalThread, QtCore.SIGNAL(
             "rerenderInboxFromLabels()"), self.rerenderInboxFromLabels)
         QtCore.QObject.connect(self.UISignalThread, QtCore.SIGNAL(
+            "rerenderSentToLabels()"), self.rerenderSentToLabels)
+        QtCore.QObject.connect(self.UISignalThread, QtCore.SIGNAL(
+            "rerenderAddressBook()"), self.rerenderAddressBook)
+        QtCore.QObject.connect(self.UISignalThread, QtCore.SIGNAL(
             "rerenderSubscriptions()"), self.rerenderSubscriptions)
         QtCore.QObject.connect(self.UISignalThread, QtCore.SIGNAL(
             "removeInboxRowByMsgid(PyQt_PyObject)"), self.removeInboxRowByMsgid)
+        QtCore.QObject.connect(self.UISignalThread, QtCore.SIGNAL(
+            "displayAlert(PyQt_PyObject,PyQt_PyObject,PyQt_PyObject)"), self.displayAlert)
         self.UISignalThread.start()
 
         # Below this point, it would be good if all of the necessary global data
@@ -1292,6 +1293,12 @@ class MyForm(QtGui.QMainWindow):
         elif len(shared.connectedHostsList) == 0:
             self.setStatusIcon('red')
 
+    # timer driven
+    def runEveryTwoSeconds(self):
+        self.ui.labelLookupsPerSecond.setText(_translate(
+            "MainWindow", "Inventory lookups per second: %1").arg(str(shared.numberOfInventoryLookupsPerformed/2)))
+        shared.numberOfInventoryLookupsPerformed = 0
+
     # Indicates whether or not there is a connection to the Bitmessage network
     connected = False
 
@@ -1396,6 +1403,12 @@ class MyForm(QtGui.QMainWindow):
                 self.ui.tableWidgetInbox.removeRow(i)
                 break
 
+    def displayAlert(self, title, text, exitAfterUserClicksOk):
+        self.statusBar().showMessage(text)
+        QtGui.QMessageBox.critical(self, title, text, QMessageBox.Ok)
+        if exitAfterUserClicksOk:
+            os._exit(0)
+
     def rerenderInboxFromLabels(self):
         for i in range(self.ui.tableWidgetInbox.rowCount()):
             addressToLookup = str(self.ui.tableWidgetInbox.item(
@@ -1467,6 +1480,19 @@ class MyForm(QtGui.QMainWindow):
                     toLabel, = row
                     self.ui.tableWidgetSent.item(
                         i, 0).setText(unicode(toLabel, 'utf-8'))
+
+    def rerenderAddressBook(self):
+        self.ui.tableWidgetAddressBook.setRowCount(0)
+        queryreturn = sqlQuery('SELECT * FROM addressbook')
+        for row in queryreturn:
+            label, address = row
+            self.ui.tableWidgetAddressBook.insertRow(0)
+            newItem = QtGui.QTableWidgetItem(unicode(label, 'utf-8'))
+            self.ui.tableWidgetAddressBook.setItem(0, 0, newItem)
+            newItem = QtGui.QTableWidgetItem(address)
+            newItem.setFlags(
+                QtCore.Qt.ItemIsSelectable | QtCore.Qt.ItemIsEnabled)
+            self.ui.tableWidgetAddressBook.setItem(0, 1, newItem)
 
     def rerenderSubscriptions(self):
         self.ui.tableWidgetSubscriptions.setRowCount(0)
@@ -2281,7 +2307,15 @@ class MyForm(QtGui.QMainWindow):
         else:
             self.ui.labelFrom.setText(toAddressAtCurrentInboxRow)
             self.setBroadcastEnablementDependingOnWhetherThisIsAChanAddress(toAddressAtCurrentInboxRow)
+
         self.ui.lineEditTo.setText(str(fromAddressAtCurrentInboxRow))
+        
+        # If the previous message was to a chan then we should send our reply to the chan rather than to the particular person who sent the message.
+        if shared.config.has_section(toAddressAtCurrentInboxRow):
+            if shared.safeConfigGetBoolean(toAddressAtCurrentInboxRow, 'chan'):
+                print 'original sent to a chan. Setting the to address in the reply to the chan address.'
+                self.ui.lineEditTo.setText(str(toAddressAtCurrentInboxRow))
+
         self.ui.comboBoxSendFrom.setCurrentIndex(0)
         # self.ui.comboBoxSendFrom.setEditText(str(self.ui.tableWidgetInbox.item(currentInboxRow,0).text))
         self.ui.textEditMessage.setText('\n\n------------------------------------------------------\n' + self.ui.tableWidgetInbox.item(
@@ -2708,9 +2742,8 @@ class MyForm(QtGui.QMainWindow):
 
             inventoryHash = str(self.ui.tableWidgetInbox.item(
                 currentRow, 3).data(Qt.UserRole).toPyObject())
-            t = (inventoryHash,)
-            self.ubuntuMessagingMenuClear(t)
-            sqlExecute('''update inbox set read=1 WHERE msgid=?''', *t)
+            self.ubuntuMessagingMenuClear(inventoryHash)
+            sqlExecute('''update inbox set read=1 WHERE msgid=?''', inventoryHash)
 
     def tableWidgetSentItemClicked(self):
         currentRow = self.ui.tableWidgetSent.currentRow()
@@ -3176,10 +3209,17 @@ class UISignaler(QThread):
                 self.emit(SIGNAL("setStatusIcon(PyQt_PyObject)"), data)
             elif command == 'rerenderInboxFromLabels':
                 self.emit(SIGNAL("rerenderInboxFromLabels()"))
+            elif command == 'rerenderSentToLabels':
+                self.emit(SIGNAL("rerenderSentToLabels()"))
+            elif command == 'rerenderAddressBook':
+                self.emit(SIGNAL("rerenderAddressBook()"))
             elif command == 'rerenderSubscriptions':
                 self.emit(SIGNAL("rerenderSubscriptions()"))
             elif command == 'removeInboxRowByMsgid':
                 self.emit(SIGNAL("removeInboxRowByMsgid(PyQt_PyObject)"), data)
+            elif command == 'alert':
+                title, text, exitAfterUserClicksOk = data
+                self.emit(SIGNAL("displayAlert(PyQt_PyObject, PyQt_PyObject, PyQt_PyObject)"), title, text, exitAfterUserClicksOk)
             else:
                 sys.stderr.write(
                     'Command sent to UISignaler not recognized: %s\n' % command)

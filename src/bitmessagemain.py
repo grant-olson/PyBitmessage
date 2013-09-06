@@ -36,6 +36,7 @@ from debug import logger
 
 # Helper Functions
 import helper_bootstrap
+import proofofwork
 
 import sys
 if sys.platform == 'darwin':
@@ -147,6 +148,25 @@ class MySimpleXMLRPCRequestHandler(SimpleXMLRPCRequestHandler):
         except TypeError as e:
             raise APIError(22, "Decode error - " + str(e))
         
+    def _verifyAddress(self, address):
+        status, addressVersionNumber, streamNumber, ripe = decodeAddress(address)
+        if status != 'success':
+            logger.warn('API Error 0007: Could not decode address %s. Status: %s.', address, status)
+
+            if status == 'checksumfailed':
+                raise APIError(8, 'Checksum failed for address: ' + address)
+            if status == 'invalidcharacters':
+                raise APIError(9, 'Invalid characters in address: ' + address)
+            if status == 'versiontoohigh':
+                raise APIError(10, 'Address version number too high (or zero) in address: ' + address)
+            raise APIError(7, 'Could not decode address: ' + address + ' : ' + status)
+        if addressVersionNumber < 2 or addressVersionNumber > 3:
+            raise APIError(11, 'The address version number currently must be 2 or 3. Others aren\'t supported. Check the address.')
+        if streamNumber != 1:
+            raise APIError(12, 'The stream number must be 1. Others aren\'t supported. Check the address.')
+
+        return (status, addressVersionNumber, streamNumber, ripe)
+
     def _handle_request(self, method, params):
         if method == 'helloWorld':
             (a, b) = params
@@ -167,8 +187,12 @@ class MySimpleXMLRPCRequestHandler(SimpleXMLRPCRequestHandler):
                     data
                     if len(data) > 20:
                         data += ','
+                    if shared.config.has_option(addressInKeysFile, 'chan'):
+                        chan = shared.config.getboolean(addressInKeysFile, 'chan')
+                    else:
+                        chan = False
                     data += json.dumps({'label': shared.config.get(addressInKeysFile, 'label'), 'address': addressInKeysFile, 'stream':
-                                       streamNumber, 'enabled': shared.config.getboolean(addressInKeysFile, 'enabled')}, indent=4, separators=(',', ': '))
+                                       streamNumber, 'enabled': shared.config.getboolean(addressInKeysFile, 'enabled'), 'chan': chan}, indent=4, separators=(',', ': '))
             data += ']}'
             return data
         elif method == 'listAddressBook' or method == 'listAddressbook':
@@ -182,6 +206,33 @@ class MySimpleXMLRPCRequestHandler(SimpleXMLRPCRequestHandler):
                 data += json.dumps({'label':label.encode('base64'), 'address': address}, indent=4, separators=(',', ': '))
             data += ']}'
             return data
+        elif method == 'addAddressBook' or method == 'addAddressbook':
+            if len(params) != 2:
+                raise APIError(0, "I need label and address")
+            address, label = params
+            label = self._decode(label, "base64")
+            address = addBMIfNotPresent(address)
+            self._verifyAddress(address)
+            queryreturn = sqlQuery("SELECT address FROM addressbook WHERE address=?", address)
+            if queryreturn != []:
+                raise APIError(16, 'You already have this address in your address book.')
+
+            sqlExecute("INSERT INTO addressbook VALUES(?,?)", label, address)
+            shared.UISignalQueue.put(('rerenderInboxFromLabels',''))
+            shared.UISignalQueue.put(('rerenderSentToLabels',''))
+            shared.UISignalQueue.put(('rerenderAddressBook',''))
+            return "Added address %s to address book" % address
+        elif method == 'deleteAddressBook' or method == 'deleteAddressbook':
+            if len(params) != 1:
+                raise APIError(0, "I need an address")
+            address, = params
+            address = addBMIfNotPresent(address)
+            self._verifyAddress(address)
+            sqlExecute('DELETE FROM addressbook WHERE address=?', address)
+            shared.UISignalQueue.put(('rerenderInboxFromLabels',''))
+            shared.UISignalQueue.put(('rerenderSentToLabels',''))
+            shared.UISignalQueue.put(('rerenderAddressBook',''))
+            return "Deleted address book entry for %s if it existed" % address
         elif method == 'createRandomAddress':
             if len(params) == 0:
                 raise APIError(0, 'I need parameters!')
@@ -495,40 +546,10 @@ class MySimpleXMLRPCRequestHandler(SimpleXMLRPCRequestHandler):
                 raise APIError(6, 'The encoding type must be 2 because that is the only one this program currently supports.')
             subject = self._decode(subject, "base64")
             message = self._decode(message, "base64")
-            status, addressVersionNumber, streamNumber, toRipe = decodeAddress(
-                toAddress)
-            if status != 'success':
-                logger.warn('API Error 0007: Could not decode address %s. Status: %s.', toAddress, status)
-
-                if status == 'checksumfailed':
-                    raise APIError(8, 'Checksum failed for address: ' + toAddress)
-                if status == 'invalidcharacters':
-                    raise APIError(9, 'Invalid characters in address: ' + toAddress)
-                if status == 'versiontoohigh':
-                    raise APIError(10, 'Address version number too high (or zero) in address: ' + toAddress)
-                raise APIError(7, 'Could not decode address: ' + toAddress + ' : ' + status)
-            if addressVersionNumber < 2 or addressVersionNumber > 3:
-                raise APIError(11, 'The address version number currently must be 2 or 3. Others aren\'t supported. Check the toAddress.')
-            if streamNumber != 1:
-                raise APIError(12, 'The stream number must be 1. Others aren\'t supported. Check the toAddress.')
-            status, addressVersionNumber, streamNumber, fromRipe = decodeAddress(
-                fromAddress)
-            if status != 'success':
-                logger.warn('API Error 0007: Could not decode address %s. Status: %s.', fromAddress, status)
-
-                if status == 'checksumfailed':
-                    raise APIError(8, 'Checksum failed for address: ' + fromAddress)
-                if status == 'invalidcharacters':
-                    raise APIError(9, 'Invalid characters in address: ' + fromAddress)
-                if status == 'versiontoohigh':
-                    raise APIError(10, 'Address version number too high (or zero) in address: ' + fromAddress)
-                raise APIError(7, 'Could not decode address: ' + fromAddress + ' : ' + status)
-            if addressVersionNumber < 2 or addressVersionNumber > 3:
-                raise APIError(11, 'The address version number currently must be 2 or 3. Others aren\'t supported. Check the fromAddress.')
-            if streamNumber != 1:
-                raise APIError(12, 'The stream number must be 1. Others aren\'t supported. Check the fromAddress.')
             toAddress = addBMIfNotPresent(toAddress)
             fromAddress = addBMIfNotPresent(fromAddress)
+            status, addressVersionNumber, streamNumber, toRipe = self._verifyAddress(toAddress)
+            self._verifyAddress(fromAddress)
             try:
                 fromAddressEnabled = shared.config.getboolean(
                     fromAddress, 'enabled')
@@ -569,23 +590,8 @@ class MySimpleXMLRPCRequestHandler(SimpleXMLRPCRequestHandler):
             subject = self._decode(subject, "base64")
             message = self._decode(message, "base64")
 
-            status, addressVersionNumber, streamNumber, fromRipe = decodeAddress(
-                fromAddress)
-            if status != 'success':
-                logger.warn('API Error 0007: Could not decode address %s. Status: %s.', fromAddress, status)
-
-                if status == 'checksumfailed':
-                    raise APIError(8, 'Checksum failed for address: ' + fromAddress)
-                if status == 'invalidcharacters':
-                    raise APIError(9, 'Invalid characters in address: ' + fromAddress)
-                if status == 'versiontoohigh':
-                    raise APIError(10, 'Address version number too high (or zero) in address: ' + fromAddress)
-                raise APIError(7, 'Could not decode address: ' + fromAddress + ' : ' + status)
-            if addressVersionNumber < 2 or addressVersionNumber > 3:
-                raise APIError(11, 'the address version number currently must be 2 or 3. Others aren\'t supported. Check the fromAddress.')
-            if streamNumber != 1:
-                raise APIError(12, 'the stream number must be 1. Others aren\'t supported. Check the fromAddress.')
             fromAddress = addBMIfNotPresent(fromAddress)
+            self._verifyAddress(fromAddress)
             try:
                 fromAddressEnabled = shared.config.getboolean(
                     fromAddress, 'enabled')
@@ -637,22 +643,7 @@ class MySimpleXMLRPCRequestHandler(SimpleXMLRPCRequestHandler):
             if len(params) > 2:
                 raise APIError(0, 'I need either 1 or 2 parameters!')
             address = addBMIfNotPresent(address)
-            status, addressVersionNumber, streamNumber, toRipe = decodeAddress(
-                address)
-            if status != 'success':
-                logger.warn('API Error 0007: Could not decode address %s. Status: %s.', address, status)
-
-                if status == 'checksumfailed':
-                    raise APIError(8, 'Checksum failed for address: ' + address)
-                if status == 'invalidcharacters':
-                    raise APIError(9, 'Invalid characters in address: ' + address)
-                if status == 'versiontoohigh':
-                    raise APIError(10, 'Address version number too high (or zero) in address: ' + address)
-                raise APIError(7, 'Could not decode address: ' + address + ' : ' + status)
-            if addressVersionNumber < 2 or addressVersionNumber > 3:
-                raise APIError(11, 'The address version number currently must be 2 or 3. Others aren\'t supported.')
-            if streamNumber != 1:
-                raise APIError(12, 'The stream number must be 1. Others aren\'t supported.')
+            self._verifyAddress(address)
             # First we must check to see if the address is already in the
             # subscriptions list.
             queryreturn = sqlQuery('''select * from subscriptions where address=?''', address)
@@ -687,14 +678,28 @@ class MySimpleXMLRPCRequestHandler(SimpleXMLRPCRequestHandler):
             return data
         elif method == 'disseminatePreEncryptedMsg':
             # The device issuing this command to PyBitmessage supplies a msg object that has
-            # already been encrypted and had the necessary proof of work done for it to be
-            # disseminated to the rest of the Bitmessage network. PyBitmessage accepts this msg
-            # object and sends it out to the rest of the Bitmessage network as if it had generated the
-            # message itself. Please do not yet add this to the api doc.
-            if len(params) != 1:
-                raise APIError(0, 'I need 1 parameter!')
-            encryptedPayload, = params
+            # already been encrypted but which still needs the POW to be done. PyBitmessage
+            # accepts this msg object and sends it out to the rest of the Bitmessage network
+            # as if it had generated the message itself. Please do not yet add this to the
+            # api doc.
+            if len(params) != 3:
+                raise APIError(0, 'I need 3 parameter!')
+            encryptedPayload, requiredAverageProofOfWorkNonceTrialsPerByte, requiredPayloadLengthExtraBytes = params
             encryptedPayload = self._decode(encryptedPayload, "hex")
+            # Let us do the POW and attach it to the front
+            target = 2**64 / ((len(encryptedPayload)+requiredPayloadLengthExtraBytes+8) * requiredAverageProofOfWorkNonceTrialsPerByte)
+            with shared.printLock:
+                print '(For msg message via API) Doing proof of work. Total required difficulty:', float(requiredAverageProofOfWorkNonceTrialsPerByte) / shared.networkDefaultProofOfWorkNonceTrialsPerByte, 'Required small message difficulty:', float(requiredPayloadLengthExtraBytes) / shared.networkDefaultPayloadLengthExtraBytes
+            powStartTime = time.time()
+            initialHash = hashlib.sha512(encryptedPayload).digest()
+            trialValue, nonce = proofofwork.run(target, initialHash)
+            with shared.printLock:
+                print '(For msg message via API) Found proof of work', trialValue, 'Nonce:', nonce
+                try:
+                    print 'POW took', int(time.time() - powStartTime), 'seconds.', nonce / (time.time() - powStartTime), 'nonce trials per second.'
+                except:
+                    pass
+            encryptedPayload = pack('>Q', nonce) + encryptedPayload
             toStreamNumber = decodeVarint(encryptedPayload[16:26])[0]
             inventoryHash = calculateInventoryHash(encryptedPayload)
             objectType = 'msg'
@@ -705,15 +710,25 @@ class MySimpleXMLRPCRequestHandler(SimpleXMLRPCRequestHandler):
             shared.broadcastToSendDataQueues((
                 toStreamNumber, 'sendinv', inventoryHash))
         elif method == 'disseminatePubkey':
-            # The device issuing this command to PyBitmessage supplies a pubkey object that has
-            # already had the necessary proof of work done for it to be disseminated to the rest of the 
-            # Bitmessage network. PyBitmessage accepts this pubkey object and sends it out to the 
-            # rest of the Bitmessage network as if it had generated the pubkey object itself. Please
-            # do not yet add this to the api doc.
+            # The device issuing this command to PyBitmessage supplies a pubkey object to be
+            # disseminated to the rest of the Bitmessage network. PyBitmessage accepts this
+            # pubkey object and sends it out to the rest of the Bitmessage network as if it
+            # had generated the pubkey object itself. Please do not yet add this to the api
+            # doc.
             if len(params) != 1:
                 raise APIError(0, 'I need 1 parameter!')
             payload, = params
             payload = self._decode(payload, "hex")
+
+            # Let us do the POW
+            target = 2 ** 64 / ((len(payload) + shared.networkDefaultPayloadLengthExtraBytes +
+                                 8) * shared.networkDefaultProofOfWorkNonceTrialsPerByte)
+            print '(For pubkey message via API) Doing proof of work...'
+            initialHash = hashlib.sha512(payload).digest()
+            trialValue, nonce = proofofwork.run(target, initialHash)
+            print '(For pubkey message via API) Found proof of work', trialValue, 'Nonce:', nonce
+            payload = pack('>Q', nonce) + payload
+            
             pubkeyReadPosition = 8 # bypass the nonce
             if payload[pubkeyReadPosition:pubkeyReadPosition+4] == '\x00\x00\x00\x00': # if this pubkey uses 8 byte time
                 pubkeyReadPosition += 8
@@ -834,6 +849,7 @@ if shared.useVeryEasyProofOfWorkForTesting:
 
 class Main:
     def start(self, daemon=False):
+        shared.daemon = daemon
         # is the application already running?  If yes then exit.
         thisapp = singleton.singleinstance()
 
