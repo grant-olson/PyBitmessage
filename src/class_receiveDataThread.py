@@ -1020,8 +1020,10 @@ class receiveDataThread(threading.Thread):
                         fullFromAddress = queryreturn[0][0] + " (" + fromAddress + ")"
 
                     # Let us now send this message out as a broadcast
-                    message = 'DevTalk Mailing List.  Learn More About DevTalk -> http://bittext.ch/TUanG8v8wF\n' + time.strftime("%a, %Y-%m-%d %H:%M:%S UTC", time.gmtime(
-                    )) + '\nMessage ostensibly from ' + fullFromAddress + ':\n\n' + body
+                    message = 'DevTalk Mailing List.  Learn More About DevTalk -> http://bittext.ch/TUanG8v8wF\n'
+                    message += 'Message ostensibly from ' + fullFromAddress + '\n'
+                    message += time.strftime("%a, %Y-%m-%d %H:%M:%S UTC", time.gmtime()) + '\n\n'
+                    message += body
                     fromAddress = toAddress  # The fromAddress for the broadcast that we are about to send is the toAddress (my address) for the msg message we are currently processing.
                     ackdata = OpenSSL.rand(
                         32)  # We don't actually need the ackdata for acknowledgement since this is a broadcast message but we can use it to update the user interface when the POW is done generating.
