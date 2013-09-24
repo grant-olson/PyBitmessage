@@ -5,7 +5,6 @@ import threading
 import shared
 import hashlib
 import socket
-import pickle
 import random
 from struct import unpack, pack
 import sys
@@ -91,7 +90,6 @@ class receiveDataThread(threading.Thread):
             del self.selfInitiatedConnections[self.streamNumber][self]
             with shared.printLock:
                 print 'removed self (a receiveDataThread) from selfInitiatedConnections'
-
         except:
             pass
         shared.broadcastToSendDataQueues((0, 'shutdown', self.peer))
@@ -175,7 +173,6 @@ class receiveDataThread(threading.Thread):
         if self.data == '':
             while len(self.objectsThatWeHaveYetToGetFromThisPeer) > 0:
                 shared.numberOfInventoryLookupsPerformed += 1
-                random.seed()
                 objectHash, = random.sample(
                     self.objectsThatWeHaveYetToGetFromThisPeer, 1)
                 if objectHash in shared.inventory:
@@ -264,16 +261,18 @@ class receiveDataThread(threading.Thread):
         self.sock.settimeout(
             600)  # We'll send out a pong every 5 minutes to make sure the connection stays alive if there has been no other traffic to send lately.
         shared.UISignalQueue.put(('updateNetworkStatusTab', 'no data'))
-        remoteNodeSeenTime = shared.knownNodes[
-            self.streamNumber][self.peer]
         with shared.printLock:
             print 'Connection fully established with', self.peer
             print 'The size of the connectedHostsList is now', len(shared.connectedHostsList)
             print 'The length of sendDataQueues is now:', len(shared.sendDataQueues)
             print 'broadcasting addr from within connectionFullyEstablished function.'
 
-        self.broadcastaddr([(int(time.time()), self.streamNumber, 1, self.peer.host,
-                           self.peer.port)])  # This lets all of our peers know about this new node.
+        #self.broadcastaddr([(int(time.time()), self.streamNumber, 1, self.peer.host,
+        #                   self.remoteNodeIncomingPort)])  # This lets all of our peers know about this new node.
+        dataToSend = (int(time.time()), self.streamNumber, 1, self.peer.host, self.remoteNodeIncomingPort)
+        shared.broadcastToSendDataQueues((
+            self.streamNumber, 'advertisepeer', dataToSend))
+
         self.sendaddr()  # This is one large addr message to this one peer.
         if not self.initiatedConnection and len(shared.connectedHostsList) > 200:
             with shared.printLock:
@@ -298,11 +297,12 @@ class receiveDataThread(threading.Thread):
                 bigInvList[hash] = 0
         # We also have messages in our inventory in memory (which is a python
         # dictionary). Let's fetch those too.
-        for hash, storedValue in shared.inventory.items():
-            if hash not in self.someObjectsOfWhichThisRemoteNodeIsAlreadyAware:
-                objectType, streamNumber, payload, receivedTime = storedValue
-                if streamNumber == self.streamNumber and receivedTime > int(time.time()) - shared.maximumAgeOfObjectsThatIAdvertiseToOthers:
-                    bigInvList[hash] = 0
+        with shared.inventoryLock:
+            for hash, storedValue in shared.inventory.items():
+                if hash not in self.someObjectsOfWhichThisRemoteNodeIsAlreadyAware:
+                    objectType, streamNumber, payload, receivedTime, tag = storedValue
+                    if streamNumber == self.streamNumber and receivedTime > int(time.time()) - shared.maximumAgeOfObjectsThatIAdvertiseToOthers:
+                        bigInvList[hash] = 0
         numberOfObjectsInInvMessage = 0
         payload = ''
         # Now let us start appending all of these hashes together. They will be
@@ -391,7 +391,8 @@ class receiveDataThread(threading.Thread):
         # It is valid so far. Let's let our peers know about it.
         objectType = 'broadcast'
         shared.inventory[self.inventoryHash] = (
-            objectType, self.streamNumber, data, embeddedTime)
+            objectType, self.streamNumber, data, embeddedTime,'')
+        shared.inventorySets[self.streamNumber].add(self.inventoryHash)
         shared.inventoryLock.release()
         self.broadcastinv(self.inventoryHash)
         shared.numberOfBroadcastsProcessed += 1
@@ -431,8 +432,8 @@ class receiveDataThread(threading.Thread):
         broadcastVersion, broadcastVersionLength = decodeVarint(
             data[readPosition:readPosition + 9])
         readPosition += broadcastVersionLength
-        if broadcastVersion < 1 or broadcastVersion > 2:
-            print 'Cannot decode incoming broadcast versions higher than 2. Assuming the sender isn\'t being silly, you should upgrade Bitmessage because this message shall be ignored.'
+        if broadcastVersion < 1 or broadcastVersion > 3:
+            print 'Cannot decode incoming broadcast versions higher than 3. Assuming the sender isn\'t being silly, you should upgrade Bitmessage because this message shall be ignored.'
             return
         if broadcastVersion == 1:
             beginningOfPubkeyPosition = readPosition  # used when we add the pubkey to our pubkey table
@@ -501,6 +502,10 @@ class receiveDataThread(threading.Thread):
                     print 'ECDSA verify failed', err
                     return
                 # verify passed
+                fromAddress = encodeAddress(
+                    sendersAddressVersion, sendersStream, ripe.digest())
+                with shared.printLock:
+                    print 'fromAddress:', fromAddress
 
                 # Let's store the public key in case we want to reply to this person.
                 # We don't have the correct nonce or time (which would let us
@@ -514,16 +519,11 @@ class receiveDataThread(threading.Thread):
                     '\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF' + '\xFF\xFF\xFF\xFF' + data[beginningOfPubkeyPosition:endOfPubkeyPosition],
                     int(time.time()),
                     'yes')
-                # shared.workerQueue.put(('newpubkey',(sendersAddressVersion,sendersStream,ripe.digest())))
                 # This will check to see whether we happen to be awaiting this
                 # pubkey in order to send a message. If we are, it will do the
                 # POW and send it.
-                self.possibleNewPubkey(ripe.digest())
+                self.possibleNewPubkey(ripe=ripe.digest())
 
-                fromAddress = encodeAddress(
-                    sendersAddressVersion, sendersStream, ripe.digest())
-                with shared.printLock:
-                    print 'fromAddress:', fromAddress
 
                 if messageEncodingType == 2:
                     subject, body = self.decodeType2Message(message)
@@ -664,7 +664,7 @@ class receiveDataThread(threading.Thread):
             # This will check to see whether we happen to be awaiting this
             # pubkey in order to send a message. If we are, it will do the POW
             # and send it.
-            self.possibleNewPubkey(ripe.digest())
+            self.possibleNewPubkey(ripe=ripe.digest())
 
             fromAddress = encodeAddress(
                 sendersAddressVersion, sendersStream, ripe.digest())
@@ -708,6 +708,150 @@ class receiveDataThread(threading.Thread):
             with shared.printLock:
                 print 'Time spent processing this interesting broadcast:', time.time() - self.messageProcessingStartTime
 
+        if broadcastVersion == 3:
+            cleartextStreamNumber, cleartextStreamNumberLength = decodeVarint(
+                data[readPosition:readPosition + 10])
+            readPosition += cleartextStreamNumberLength
+            embeddedTag = data[readPosition:readPosition+32]
+            readPosition += 32
+            if embeddedTag not in shared.MyECSubscriptionCryptorObjects:
+                with shared.printLock:
+                    print 'We\'re not interested in this broadcast.'
+                return
+            # We are interested in this broadcast because of its tag.
+            cryptorObject = shared.MyECSubscriptionCryptorObjects[embeddedTag]
+            try:
+                decryptedData = cryptorObject.decrypt(data[readPosition:])
+                print 'EC decryption successful'
+            except Exception as err:
+                with shared.printLock:
+                    print 'Broadcast version 3 decryption Unsuccessful.'
+                return
+
+            signedBroadcastVersion, readPosition = decodeVarint(
+                decryptedData[:10])
+            beginningOfPubkeyPosition = readPosition  # used when we add the pubkey to our pubkey table
+            sendersAddressVersion, sendersAddressVersionLength = decodeVarint(
+                decryptedData[readPosition:readPosition + 9])
+            if sendersAddressVersion < 4:
+                print 'Cannot decode senderAddressVersion less than 4 for broadcast version number 3. Assuming the sender isn\'t being silly, you should upgrade Bitmessage because this message shall be ignored.'
+                return
+            readPosition += sendersAddressVersionLength
+            sendersStream, sendersStreamLength = decodeVarint(
+                decryptedData[readPosition:readPosition + 9])
+            if sendersStream != cleartextStreamNumber:
+                print 'The stream number outside of the encryption on which the POW was completed doesn\'t match the stream number inside the encryption. Ignoring broadcast.'
+                return
+            readPosition += sendersStreamLength
+            behaviorBitfield = decryptedData[readPosition:readPosition + 4]
+            readPosition += 4
+            sendersPubSigningKey = '\x04' + \
+                decryptedData[readPosition:readPosition + 64]
+            readPosition += 64
+            sendersPubEncryptionKey = '\x04' + \
+                decryptedData[readPosition:readPosition + 64]
+            readPosition += 64
+            if sendersAddressVersion >= 3:
+                requiredAverageProofOfWorkNonceTrialsPerByte, varintLength = decodeVarint(
+                    decryptedData[readPosition:readPosition + 10])
+                readPosition += varintLength
+                print 'sender\'s requiredAverageProofOfWorkNonceTrialsPerByte is', requiredAverageProofOfWorkNonceTrialsPerByte
+                requiredPayloadLengthExtraBytes, varintLength = decodeVarint(
+                    decryptedData[readPosition:readPosition + 10])
+                readPosition += varintLength
+                print 'sender\'s requiredPayloadLengthExtraBytes is', requiredPayloadLengthExtraBytes
+            endOfPubkeyPosition = readPosition
+
+            sha = hashlib.new('sha512')
+            sha.update(sendersPubSigningKey + sendersPubEncryptionKey)
+            ripeHasher = hashlib.new('ripemd160')
+            ripeHasher.update(sha.digest())
+            calculatedRipe = ripeHasher.digest()
+
+            calculatedTag = hashlib.sha512(hashlib.sha512(encodeVarint(
+                sendersAddressVersion) + encodeVarint(sendersStream) + calculatedRipe).digest()).digest()[32:]
+            if calculatedTag != embeddedTag:
+                print 'The tag and encryption key used to encrypt this message doesn\'t match the keys inbedded in the message itself. Ignoring message.'
+                return
+            messageEncodingType, messageEncodingTypeLength = decodeVarint(
+                decryptedData[readPosition:readPosition + 9])
+            if messageEncodingType == 0:
+                return
+            readPosition += messageEncodingTypeLength
+            messageLength, messageLengthLength = decodeVarint(
+                decryptedData[readPosition:readPosition + 9])
+            readPosition += messageLengthLength
+            message = decryptedData[readPosition:readPosition + messageLength]
+            readPosition += messageLength
+            readPositionAtBottomOfMessage = readPosition
+            signatureLength, signatureLengthLength = decodeVarint(
+                decryptedData[readPosition:readPosition + 9])
+            readPosition += signatureLengthLength
+            signature = decryptedData[
+                readPosition:readPosition + signatureLength]
+            try:
+                if not highlevelcrypto.verify(decryptedData[:readPositionAtBottomOfMessage], signature, sendersPubSigningKey.encode('hex')):
+                    print 'ECDSA verify failed'
+                    return
+                print 'ECDSA verify passed'
+            except Exception as err:
+                print 'ECDSA verify failed', err
+                return
+            # verify passed
+
+            fromAddress = encodeAddress(
+                sendersAddressVersion, sendersStream, calculatedRipe)
+            with shared.printLock:
+                print 'fromAddress:', fromAddress
+
+            # Let's store the public key in case we want to reply to this person.
+            sqlExecute(
+                '''INSERT INTO pubkeys VALUES (?,?,?,?)''',
+                calculatedRipe,
+                '\x00\x00\x00\x00\x00\x00\x00\x01' + decryptedData[beginningOfPubkeyPosition:endOfPubkeyPosition],
+                int(time.time()),
+                'yes')
+            # This will check to see whether we happen to be awaiting this
+            # pubkey in order to send a message. If we are, it will do the
+            # POW and send it.
+            self.possibleNewPubkey(address = fromAddress)
+
+            if messageEncodingType == 2:
+                subject, body = self.decodeType2Message(message)
+            elif messageEncodingType == 1:
+                body = message
+                subject = ''
+            elif messageEncodingType == 0:
+                print 'messageEncodingType == 0. Doing nothing with the message.'
+            else:
+                body = 'Unknown encoding type.\n\n' + repr(message)
+                subject = ''
+
+            toAddress = '[Broadcast subscribers]'
+            if messageEncodingType != 0:
+
+                t = (self.inventoryHash, toAddress, fromAddress, subject, int(
+                    time.time()), body, 'inbox', messageEncodingType, 0)
+                helper_inbox.insert(t)
+
+                shared.UISignalQueue.put(('displayNewInboxMessage', (
+                    self.inventoryHash, toAddress, fromAddress, subject, body)))
+
+                # If we are behaving as an API then we might need to run an
+                # outside command to let some program know that a new message
+                # has arrived.
+                if shared.safeConfigGetBoolean('bitmessagesettings', 'apienabled'):
+                    try:
+                        apiNotifyPath = shared.config.get(
+                            'bitmessagesettings', 'apinotifypath')
+                    except:
+                        apiNotifyPath = ''
+                    if apiNotifyPath != '':
+                        call([apiNotifyPath, "newBroadcast"])
+
+            # Display timing data
+            with shared.printLock:
+                print 'Time spent processing this interesting broadcast:', time.time() - self.messageProcessingStartTime
 
     # We have received a msg message.
     def recmsg(self, data):
@@ -754,7 +898,8 @@ class receiveDataThread(threading.Thread):
         # This msg message is valid. Let's let our peers know about it.
         objectType = 'msg'
         shared.inventory[self.inventoryHash] = (
-            objectType, self.streamNumber, data, embeddedTime)
+            objectType, self.streamNumber, data, embeddedTime,'')
+        shared.inventorySets[self.streamNumber].add(self.inventoryHash)
         shared.inventoryLock.release()
         self.broadcastinv(self.inventoryHash)
         shared.numberOfMessagesProcessed += 1
@@ -844,7 +989,7 @@ class receiveDataThread(threading.Thread):
             if sendersAddressVersionNumber == 0:
                 print 'Cannot understand sendersAddressVersionNumber = 0. Ignoring message.'
                 return
-            if sendersAddressVersionNumber >= 4:
+            if sendersAddressVersionNumber > 4:
                 print 'Sender\'s address version number', sendersAddressVersionNumber, 'not yet supported. Ignoring message.'
                 return
             if len(decryptedData) < 170:
@@ -919,21 +1064,32 @@ class receiveDataThread(threading.Thread):
             sha.update(pubSigningKey + pubEncryptionKey)
             ripe = hashlib.new('ripemd160')
             ripe.update(sha.digest())
-            # Let's store the public key in case we want to reply to this
-            # person.
-            sqlExecute(
-                '''INSERT INTO pubkeys VALUES (?,?,?,?)''',
-                ripe.digest(),
-                '\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF' + '\xFF\xFF\xFF\xFF' + decryptedData[messageVersionLength:endOfThePublicKeyPosition],
-                int(time.time()),
-                'yes')
-            # shared.workerQueue.put(('newpubkey',(sendersAddressVersionNumber,sendersStreamNumber,ripe.digest())))
-            # This will check to see whether we happen to be awaiting this
-            # pubkey in order to send a message. If we are, it will do the POW
-            # and send it.
-            self.possibleNewPubkey(ripe.digest())
             fromAddress = encodeAddress(
                 sendersAddressVersionNumber, sendersStreamNumber, ripe.digest())
+            # Let's store the public key in case we want to reply to this
+            # person.
+            if sendersAddressVersionNumber <= 3:
+                sqlExecute(
+                    '''INSERT INTO pubkeys VALUES (?,?,?,?)''',
+                    ripe.digest(),
+                    '\xFF\xFF\xFF\xFF\xFF\xFF\xFF\xFF' + '\xFF\xFF\xFF\xFF' + decryptedData[messageVersionLength:endOfThePublicKeyPosition],
+                    int(time.time()),
+                    'yes')
+                # This will check to see whether we happen to be awaiting this
+                # pubkey in order to send a message. If we are, it will do the POW
+                # and send it.
+                self.possibleNewPubkey(ripe=ripe.digest())
+            elif sendersAddressVersionNumber >= 4:
+                sqlExecute(
+                    '''INSERT INTO pubkeys VALUES (?,?,?,?)''',
+                    ripe.digest(),
+                    '\x00\x00\x00\x00\x00\x00\x00\x01' + decryptedData[messageVersionLength:endOfThePublicKeyPosition],
+                    int(time.time()),
+                    'yes')
+                # This will check to see whether we happen to be awaiting this
+                # pubkey in order to send a message. If we are, it will do the POW
+                # and send it.
+                self.possibleNewPubkey(address = fromAddress)
             # If this message is bound for one of my version 3 addresses (or
             # higher), then we must check to make sure it meets our demanded
             # proof of work requirement.
@@ -1094,23 +1250,41 @@ class receiveDataThread(threading.Thread):
         else:
             return '[' + mailingListName + '] ' + subject
 
-    def possibleNewPubkey(self, toRipe):
-        if toRipe in shared.neededPubkeys:
-            print 'We have been awaiting the arrival of this pubkey.'
-            del shared.neededPubkeys[toRipe]
-            sqlExecute(
-                '''UPDATE sent SET status='doingmsgpow' WHERE toripe=? AND (status='awaitingpubkey' or status='doingpubkeypow') and folder='sent' ''',
-                toRipe)
-            shared.workerQueue.put(('sendmessage', ''))
-        else:
-            with shared.printLock:
-                print 'We don\'t need this pub key. We didn\'t ask for it. Pubkey hash:', toRipe.encode('hex')
-
+    # We have inserted a pubkey into our pubkey table which we received from a 
+    # pubkey, msg, or broadcast message. It might be one that we have been
+    # waiting for. Let's check.
+    def possibleNewPubkey(self, ripe=None, address=None):
+        # For address versions <= 3, we wait on a key with the correct ripe hash
+        if ripe != None:
+            if ripe in shared.neededPubkeys:
+                print 'We have been awaiting the arrival of this pubkey.'
+                del shared.neededPubkeys[ripe]
+                sqlExecute(
+                    '''UPDATE sent SET status='doingmsgpow' WHERE toripe=? AND (status='awaitingpubkey' or status='doingpubkeypow') and folder='sent' ''',
+                    ripe)
+                shared.workerQueue.put(('sendmessage', ''))
+            else:
+                with shared.printLock:
+                    print 'We don\'t need this pub key. We didn\'t ask for it. Pubkey hash:', ripe.encode('hex')
+        # For address versions >= 4, we wait on a pubkey with the correct tag.
+        # Let us create the tag from the address and see if we were waiting
+        # for it.
+        elif address != None:
+            status, addressVersion, streamNumber, ripe = decodeAddress(address)
+            tag = hashlib.sha512(hashlib.sha512(encodeVarint(
+                addressVersion) + encodeVarint(streamNumber) + ripe).digest()).digest()[32:]
+            if tag in shared.neededPubkeys:
+                print 'We have been awaiting the arrival of this pubkey.'
+                del shared.neededPubkeys[tag]
+                sqlExecute(
+                    '''UPDATE sent SET status='doingmsgpow' WHERE toripe=? AND (status='awaitingpubkey' or status='doingpubkeypow') and folder='sent' ''',
+                    ripe)
+                shared.workerQueue.put(('sendmessage', ''))
 
     # We have received a pubkey
     def recpubkey(self, data):
         self.pubkeyProcessingStartTime = time.time()
-        if len(data) < 146 or len(data) > 600:  # sanity check
+        if len(data) < 146 or len(data) > 420:  # sanity check
             return
         # We must check to make sure the proof of work is sufficient.
         if not self.isProofOfWorkSufficient(data):
@@ -1147,6 +1321,11 @@ class receiveDataThread(threading.Thread):
         if self.streamNumber != streamNumber:
             print 'stream number embedded in this pubkey doesn\'t match our stream number. Ignoring.'
             return
+        if addressVersion >= 4:
+            tag = data[readPosition:readPosition + 32]
+            print 'tag in received pubkey is:', tag.encode('hex')
+        else:
+            tag = ''
 
         shared.numberOfInventoryLookupsPerformed += 1
         inventoryHash = calculateInventoryHash(data)
@@ -1161,7 +1340,8 @@ class receiveDataThread(threading.Thread):
             return
         objectType = 'pubkey'
         shared.inventory[inventoryHash] = (
-            objectType, self.streamNumber, data, embeddedTime)
+            objectType, self.streamNumber, data, embeddedTime, tag)
+        shared.inventorySets[self.streamNumber].add(inventoryHash)
         shared.inventoryLock.release()
         self.broadcastinv(inventoryHash)
         shared.numberOfPubkeysProcessed += 1
@@ -1170,7 +1350,7 @@ class receiveDataThread(threading.Thread):
 
         self.processpubkey(data)
 
-        lengthOfTimeWeShouldUseToProcessThisMessage = .2
+        lengthOfTimeWeShouldUseToProcessThisMessage = .1
         sleepTime = lengthOfTimeWeShouldUseToProcessThisMessage - \
             (time.time() - self.pubkeyProcessingStartTime)
         if sleepTime > 0 and doTimingAttackMitigation:
@@ -1203,7 +1383,7 @@ class receiveDataThread(threading.Thread):
         if addressVersion == 0:
             print '(Within processpubkey) addressVersion of 0 doesn\'t make sense.'
             return
-        if addressVersion > 3 or addressVersion == 1:
+        if addressVersion > 4 or addressVersion == 1:
             with shared.printLock:
                 print 'This version of Bitmessage cannot handle version', addressVersion, 'addresses.'
 
@@ -1248,7 +1428,7 @@ class receiveDataThread(threading.Thread):
                      # This will also update the embeddedTime.
             sqlExecute('''INSERT INTO pubkeys VALUES (?,?,?,?)''', *t)
             # shared.workerQueue.put(('newpubkey',(addressVersion,streamNumber,ripe)))
-            self.possibleNewPubkey(ripe)
+            self.possibleNewPubkey(ripe = ripe)
         if addressVersion == 3:
             if len(data) < 170:  # sanity check.
                 print '(within processpubkey) payloadLength less than 170. Sanity check failed.'
@@ -1304,8 +1484,94 @@ class receiveDataThread(threading.Thread):
                 t = (ripe, data, embeddedTime, 'no')
                      # This will also update the embeddedTime.
             sqlExecute('''INSERT INTO pubkeys VALUES (?,?,?,?)''', *t)
-            # shared.workerQueue.put(('newpubkey',(addressVersion,streamNumber,ripe)))
-            self.possibleNewPubkey(ripe)
+            self.possibleNewPubkey(ripe = ripe)
+
+        if addressVersion == 4:
+            print 'length of v4 pubkey:', len(data)
+            if len(data) < 350:  # sanity check.
+                print '(within processpubkey) payloadLength less than 350. Sanity check failed.'
+                return
+            signedData = data[8:readPosition] # Used only for v4 or higher pubkeys
+            tag = data[readPosition:readPosition + 32]
+            readPosition += 32
+            encryptedData = data[readPosition:]
+            if tag not in shared.neededPubkeys:
+                with shared.printLock:
+                    print 'We don\'t need this v4 pubkey. We didn\'t ask for it.'
+                return
+
+            # Let us try to decrypt the pubkey
+            cryptorObject = shared.neededPubkeys[tag]
+            try:
+                decryptedData = cryptorObject.decrypt(encryptedData)
+            except:
+                # Someone must have encrypted some data with a different key
+                # but tagged it with a tag for which we are watching.
+                with shared.printLock:
+                    print 'Pubkey decryption was unsuccessful.'
+                return
+
+
+            readPosition = 0
+            bitfieldBehaviors = decryptedData[readPosition:readPosition + 4]
+            readPosition += 4
+            publicSigningKey = '\x04' + decryptedData[readPosition:readPosition + 64]
+            # Is it possible for a public key to be invalid such that trying to
+            # encrypt or sign with it will cause an error? If it is, we should
+            # probably test these keys here.
+            readPosition += 64
+            publicEncryptionKey = '\x04' + decryptedData[readPosition:readPosition + 64]
+            readPosition += 64
+            specifiedNonceTrialsPerByte, specifiedNonceTrialsPerByteLength = decodeVarint(
+                decryptedData[readPosition:readPosition + 10])
+            readPosition += specifiedNonceTrialsPerByteLength
+            specifiedPayloadLengthExtraBytes, specifiedPayloadLengthExtraBytesLength = decodeVarint(
+                decryptedData[readPosition:readPosition + 10])
+            readPosition += specifiedPayloadLengthExtraBytesLength
+            signedData += decryptedData[:readPosition]
+            signatureLength, signatureLengthLength = decodeVarint(
+                decryptedData[readPosition:readPosition + 10])
+            readPosition += signatureLengthLength
+            signature = decryptedData[readPosition:readPosition + signatureLength]
+            try:
+                if not highlevelcrypto.verify(signedData, signature, publicSigningKey.encode('hex')):
+                    print 'ECDSA verify failed (within processpubkey)'
+                    return
+                print 'ECDSA verify passed (within processpubkey)'
+            except Exception as err:
+                print 'ECDSA verify failed (within processpubkey)', err
+                return
+
+            sha = hashlib.new('sha512')
+            sha.update(publicSigningKey + publicEncryptionKey)
+            ripeHasher = hashlib.new('ripemd160')
+            ripeHasher.update(sha.digest())
+            ripe = ripeHasher.digest()
+
+            # We need to make sure that the tag on the outside of the encryption
+            # is the one generated from hashing these particular keys.
+            if tag != hashlib.sha512(hashlib.sha512(encodeVarint(addressVersion) + encodeVarint(streamNumber) + ripe).digest()).digest()[32:]:
+                with shared.printLock:
+                    print 'Someone was trying to act malicious: tag doesn\'t match the keys in this pubkey message. Ignoring it.'
+                return
+            else:
+                print 'Tag successfully matches keys in pubkey message' # testing. Will remove soon.
+
+            with shared.printLock:
+                print 'within recpubkey, addressVersion:', addressVersion, ', streamNumber:', streamNumber
+                print 'ripe', ripe.encode('hex')
+                print 'publicSigningKey in hex:', publicSigningKey.encode('hex')
+                print 'publicEncryptionKey in hex:', publicEncryptionKey.encode('hex')
+
+            t = (ripe, signedData, embeddedTime, 'yes')
+            sqlExecute('''INSERT INTO pubkeys VALUES (?,?,?,?)''', *t)
+            
+            fromAddress = encodeAddress(addressVersion, streamNumber, ripe)
+            # That this point we know that we have been waiting on this pubkey.
+            # This function will command the workerThread to start work on
+            # the messages that require it.
+            self.possibleNewPubkey(address = fromAddress)
+            
 
     # We have received a getpubkey message
     def recgetpubkey(self, data):
@@ -1356,7 +1622,8 @@ class receiveDataThread(threading.Thread):
 
         objectType = 'getpubkey'
         shared.inventory[inventoryHash] = (
-            objectType, self.streamNumber, data, embeddedTime)
+            objectType, self.streamNumber, data, embeddedTime,'')
+        shared.inventorySets[self.streamNumber].add(inventoryHash)
         shared.inventoryLock.release()
         # This getpubkey request is valid so far. Forward to peers.
         self.broadcastinv(inventoryHash)
@@ -1367,50 +1634,66 @@ class receiveDataThread(threading.Thread):
         elif requestedAddressVersionNumber == 1:
             print 'The requestedAddressVersionNumber of the pubkey request is 1 which isn\'t supported anymore. Ignoring it.'
             return
-        elif requestedAddressVersionNumber > 3:
+        elif requestedAddressVersionNumber > 4:
             print 'The requestedAddressVersionNumber of the pubkey request is too high. Can\'t understand. Ignoring it.'
             return
 
-        requestedHash = data[readPosition:readPosition + 20]
-        if len(requestedHash) != 20:
-            print 'The length of the requested hash is not 20 bytes. Something is wrong. Ignoring.'
-            return
-        with shared.printLock:
-            print 'the hash requested in this getpubkey request is:', requestedHash.encode('hex')
-
-        if requestedHash in shared.myAddressesByHash:  # if this address hash is one of mine
-            if decodeAddress(shared.myAddressesByHash[requestedHash])[1] != requestedAddressVersionNumber:
-                with shared.printLock:
-                    sys.stderr.write(
-                     '(Within the recgetpubkey function) Someone requested one of my pubkeys but the requestedAddressVersionNumber doesn\'t match my actual address version number. They shouldn\'t have done that. Ignoring.\n')
+        myAddress = ''
+        if requestedAddressVersionNumber <= 3 :
+            requestedHash = data[readPosition:readPosition + 20]
+            if len(requestedHash) != 20:
+                print 'The length of the requested hash is not 20 bytes. Something is wrong. Ignoring.'
                 return
-            if shared.safeConfigGetBoolean(shared.myAddressesByHash[requestedHash], 'chan'):
-                with shared.printLock:
-                    print 'Ignoring getpubkey request because it is for one of my chan addresses. The other party should already have the pubkey.'
-                    return
-            try:
-                lastPubkeySendTime = int(shared.config.get(
-                    shared.myAddressesByHash[requestedHash], 'lastpubkeysendtime'))
-            except:
-                lastPubkeySendTime = 0
-            if lastPubkeySendTime > time.time() - shared.lengthOfTimeToHoldOnToAllPubkeys:  # If the last time we sent our pubkey was more recent than 28 days ago...
-                with shared.printLock:
-                    print 'Found getpubkey-requested-hash in my list of EC hashes BUT we already sent it recently. Ignoring request. The lastPubkeySendTime is:', lastPubkeySendTime
-                    return
-
             with shared.printLock:
-                print 'Found getpubkey-requested-hash in my list of EC hashes. Telling Worker thread to do the POW for a pubkey message and send it out.'
-            if requestedAddressVersionNumber == 2:
-                shared.workerQueue.put((
-                    'doPOWForMyV2Pubkey', requestedHash))
-            elif requestedAddressVersionNumber == 3:
-                shared.workerQueue.put((
-                    'sendOutOrStoreMyV3Pubkey', requestedHash))
-         
+                print 'the hash requested in this getpubkey request is:', requestedHash.encode('hex')
+            if requestedHash in shared.myAddressesByHash:  # if this address hash is one of mine
+                myAddress = shared.myAddressesByHash[requestedHash]
+        elif requestedAddressVersionNumber >= 4:
+            requestedTag = data[readPosition:readPosition + 32]
+            if len(requestedTag) != 32:
+                print 'The length of the requested tag is not 32 bytes. Something is wrong. Ignoring.'
+                return
+            with shared.printLock:
+                print 'the tag requested in this getpubkey request is:', requestedTag.encode('hex')
+            if requestedTag in shared.myAddressesByTag:
                 
-        else:
+                myAddress = shared.myAddressesByTag[requestedTag]
+
+        if myAddress == '':
             with shared.printLock:
                 print 'This getpubkey request is not for any of my keys.'
+            return
+
+        if decodeAddress(myAddress)[1] != requestedAddressVersionNumber:
+            with shared.printLock:
+                sys.stderr.write(
+                 '(Within the recgetpubkey function) Someone requested one of my pubkeys but the requestedAddressVersionNumber doesn\'t match my actual address version number. They shouldn\'t have done that. Ignoring.\n')
+            return
+        if shared.safeConfigGetBoolean(myAddress, 'chan'):
+            with shared.printLock:
+                print 'Ignoring getpubkey request because it is for one of my chan addresses. The other party should already have the pubkey.'
+                return
+        try:
+            lastPubkeySendTime = int(shared.config.get(
+                myAddress, 'lastpubkeysendtime'))
+        except:
+            lastPubkeySendTime = 0
+        if lastPubkeySendTime > time.time() - shared.lengthOfTimeToHoldOnToAllPubkeys:  # If the last time we sent our pubkey was more recent than 28 days ago...
+            with shared.printLock:
+                print 'Found getpubkey-requested-item in my list of EC hashes BUT we already sent it recently. Ignoring request. The lastPubkeySendTime is:', lastPubkeySendTime
+                return
+
+        with shared.printLock:
+            print 'Found getpubkey-requested-hash in my list of EC hashes. Telling Worker thread to do the POW for a pubkey message and send it out.'
+        if requestedAddressVersionNumber == 2:
+            shared.workerQueue.put((
+                'doPOWForMyV2Pubkey', requestedHash))
+        elif requestedAddressVersionNumber == 3:
+            shared.workerQueue.put((
+                'sendOutOrStoreMyV3Pubkey', requestedHash))
+        elif requestedAddressVersionNumber == 4:
+            shared.workerQueue.put((
+                'sendOutOrStoreMyV4Pubkey', myAddress))
 
 
     # We have received an inv message
@@ -1451,18 +1734,10 @@ class receiveDataThread(threading.Thread):
             # 'set' of objects we are aware of and a set of objects in this inv
             # message so that we can diff one from the other cheaply.
             startTime = time.time()
-            currentInventoryList = set()
-            queryData = sqlQuery('''SELECT hash FROM inventory WHERE streamnumber=?''',
-            self.streamNumber)
-            for row in queryData:
-                currentInventoryList.add(row[0])
-            with shared.inventoryLock:
-                for objectHash, value in shared.inventory.items():
-                    currentInventoryList.add(objectHash)
             advertisedSet = set()
             for i in range(numberOfItemsInInv):
                 advertisedSet.add(data[lengthOfVarint + (32 * i):32 + lengthOfVarint + (32 * i)])
-            objectsNewToMe = advertisedSet - currentInventoryList
+            objectsNewToMe = advertisedSet - shared.inventorySets[self.streamNumber]
             logger.info('inv message lists %s objects. Of those %s are new to me. It took %s seconds to figure that out.', numberOfItemsInInv, len(objectsNewToMe), time.time()-startTime)
             for item in objectsNewToMe:  
                 if totalNumberOfobjectsThatWeHaveYetToGetFromAllPeers > 200000 and len(self.objectsThatWeHaveYetToGetFromThisPeer) > 1000:  # inv flooding attack mitigation
@@ -1509,11 +1784,14 @@ class receiveDataThread(threading.Thread):
                 print 'received getdata request for item:', hash.encode('hex')
 
             shared.numberOfInventoryLookupsPerformed += 1
+            shared.inventoryLock.acquire()
             if hash in shared.inventory:
-                objectType, streamNumber, payload, receivedTime = shared.inventory[
+                objectType, streamNumber, payload, receivedTime, tag = shared.inventory[
                     hash]
+                shared.inventoryLock.release()
                 self.sendData(objectType, payload)
             else:
+                shared.inventoryLock.release()
                 queryreturn = sqlQuery(
                     '''select objecttype, payload from inventory where hash=?''',
                     hash)
@@ -1561,16 +1839,16 @@ class receiveDataThread(threading.Thread):
                 print 'sock.sendall error:', err
 
 
-    # Send an inv message with just one hash to all of our peers
+    # Advertise this object to all of our peers
     def broadcastinv(self, hash):
         with shared.printLock:
             print 'broadcasting inv with hash:', hash.encode('hex')
 
-        shared.broadcastToSendDataQueues((self.streamNumber, 'sendinv', hash))
+        shared.broadcastToSendDataQueues((self.streamNumber, 'advertiseobject', hash))
 
     # We have received an addr message.
     def recaddr(self, data):
-        listOfAddressDetailsToBroadcastToPeers = []
+        #listOfAddressDetailsToBroadcastToPeers = []
         numberOfAddressesIncluded = 0
         numberOfAddressesIncluded, lengthOfNumberOfAddresses = decodeVarint(
             data[:10])
@@ -1579,227 +1857,113 @@ class receiveDataThread(threading.Thread):
             with shared.printLock:
                 print 'addr message contains', numberOfAddressesIncluded, 'IP addresses.'
 
+        if numberOfAddressesIncluded > 1000 or numberOfAddressesIncluded == 0:
+            return
+        if len(data) != lengthOfNumberOfAddresses + (38 * numberOfAddressesIncluded):
+            print 'addr message does not contain the correct amount of data. Ignoring.'
+            return
 
-        if self.remoteProtocolVersion == 1:
-            if numberOfAddressesIncluded > 1000 or numberOfAddressesIncluded == 0:
-                return
-            if len(data) != lengthOfNumberOfAddresses + (34 * numberOfAddressesIncluded):
-                print 'addr message does not contain the correct amount of data. Ignoring.'
-                return
-
-            needToWriteKnownNodesToDisk = False
-            for i in range(0, numberOfAddressesIncluded):
-                try:
-                    if data[16 + lengthOfNumberOfAddresses + (34 * i):28 + lengthOfNumberOfAddresses + (34 * i)] != '\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xFF\xFF':
-                        with shared.printLock:
-                            print 'Skipping IPv6 address.', repr(data[16 + lengthOfNumberOfAddresses + (34 * i):28 + lengthOfNumberOfAddresses + (34 * i)])
-
-                        continue
-                except Exception as err:
+        for i in range(0, numberOfAddressesIncluded):
+            try:
+                if data[20 + lengthOfNumberOfAddresses + (38 * i):32 + lengthOfNumberOfAddresses + (38 * i)] != '\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xFF\xFF':
                     with shared.printLock:
-                        sys.stderr.write(
-                         'ERROR TRYING TO UNPACK recaddr (to test for an IPv6 address). Message: %s\n' % str(err))
+                       print 'Skipping IPv6 address.', repr(data[20 + lengthOfNumberOfAddresses + (38 * i):32 + lengthOfNumberOfAddresses + (38 * i)])
 
-                    break  # giving up on unpacking any more. We should still be connected however.
-
-                try:
-                    recaddrStream, = unpack('>I', data[4 + lengthOfNumberOfAddresses + (
-                        34 * i):8 + lengthOfNumberOfAddresses + (34 * i)])
-                except Exception as err:
-                    with shared.printLock:
-                        sys.stderr.write(
-                          'ERROR TRYING TO UNPACK recaddr (recaddrStream). Message: %s\n' % str(err))
-
-                    break  # giving up on unpacking any more. We should still be connected however.
-                if recaddrStream == 0:
                     continue
-                if recaddrStream != self.streamNumber and recaddrStream != (self.streamNumber * 2) and recaddrStream != ((self.streamNumber * 2) + 1):  # if the embedded stream number is not in my stream or either of my child streams then ignore it. Someone might be trying funny business.
-                    continue
-                try:
-                    recaddrServices, = unpack('>Q', data[8 + lengthOfNumberOfAddresses + (
-                        34 * i):16 + lengthOfNumberOfAddresses + (34 * i)])
-                except Exception as err:
-                    with shared.printLock:
-                        sys.stderr.write(
-                            'ERROR TRYING TO UNPACK recaddr (recaddrServices). Message: %s\n' % str(err))
+            except Exception as err:
+                with shared.printLock:
+                   sys.stderr.write(
+                       'ERROR TRYING TO UNPACK recaddr (to test for an IPv6 address). Message: %s\n' % str(err))
 
-                    break  # giving up on unpacking any more. We should still be connected however.
+                break  # giving up on unpacking any more. We should still be connected however.
 
-                try:
-                    recaddrPort, = unpack('>H', data[32 + lengthOfNumberOfAddresses + (
-                        34 * i):34 + lengthOfNumberOfAddresses + (34 * i)])
-                except Exception as err:
-                    with shared.printLock:
-                        sys.stderr.write(
-                            'ERROR TRYING TO UNPACK recaddr (recaddrPort). Message: %s\n' % str(err))
+            try:
+                recaddrStream, = unpack('>I', data[8 + lengthOfNumberOfAddresses + (
+                    38 * i):12 + lengthOfNumberOfAddresses + (38 * i)])
+            except Exception as err:
+                with shared.printLock:
+                   sys.stderr.write(
+                       'ERROR TRYING TO UNPACK recaddr (recaddrStream). Message: %s\n' % str(err))
 
-                    break  # giving up on unpacking any more. We should still be connected however.
-                # print 'Within recaddr(): IP', recaddrIP, ', Port',
-                # recaddrPort, ', i', i
-                hostFromAddrMessage = socket.inet_ntoa(data[
-                                                       28 + lengthOfNumberOfAddresses + (34 * i):32 + lengthOfNumberOfAddresses + (34 * i)])
-                # print 'hostFromAddrMessage', hostFromAddrMessage
-                if data[28 + lengthOfNumberOfAddresses + (34 * i)] == '\x7F':
-                    print 'Ignoring IP address in loopback range:', hostFromAddrMessage
-                    continue
-                if helper_generic.isHostInPrivateIPRange(hostFromAddrMessage):
-                    print 'Ignoring IP address in private range:', hostFromAddrMessage
-                    continue
-                timeSomeoneElseReceivedMessageFromThisNode, = unpack('>I', data[lengthOfNumberOfAddresses + (
-                    34 * i):4 + lengthOfNumberOfAddresses + (34 * i)])  # This is the 'time' value in the received addr message.
-                if recaddrStream not in shared.knownNodes:  # knownNodes is a dictionary of dictionaries with one outer dictionary for each stream. If the outer stream dictionary doesn't exist yet then we must make it.
-                    shared.knownNodesLock.acquire()
-                    shared.knownNodes[recaddrStream] = {}
-                    shared.knownNodesLock.release()
-                peerFromAddrMessage = shared.Peer(hostFromAddrMessage, recaddrPort)
-                if peerFromAddrMessage not in shared.knownNodes[recaddrStream]:
-                    if len(shared.knownNodes[recaddrStream]) < 20000 and timeSomeoneElseReceivedMessageFromThisNode > (int(time.time()) - 10800) and timeSomeoneElseReceivedMessageFromThisNode < (int(time.time()) + 10800):  # If we have more than 20000 nodes in our list already then just forget about adding more. Also, make sure that the time that someone else received a message from this node is within three hours from now.
-                        shared.knownNodesLock.acquire()
-                        shared.knownNodes[recaddrStream][peerFromAddrMessage] = timeSomeoneElseReceivedMessageFromThisNode
-                        shared.knownNodesLock.release()
-                        needToWriteKnownNodesToDisk = True
-                        hostDetails = (
-                            timeSomeoneElseReceivedMessageFromThisNode,
-                            recaddrStream, recaddrServices, hostFromAddrMessage, recaddrPort)
-                        listOfAddressDetailsToBroadcastToPeers.append(
-                            hostDetails)
-                else:
-                    timeLastReceivedMessageFromThisNode = shared.knownNodes[recaddrStream][
-                        peerFromAddrMessage]  # PORT in this case is either the port we used to connect to the remote node, or the port that was specified by someone else in a past addr message.
-                    if (timeLastReceivedMessageFromThisNode < timeSomeoneElseReceivedMessageFromThisNode) and (timeSomeoneElseReceivedMessageFromThisNode < int(time.time())):
-                        shared.knownNodesLock.acquire()
-                        shared.knownNodes[recaddrStream][peerFromAddrMessage] = timeSomeoneElseReceivedMessageFromThisNode
-                        shared.knownNodesLock.release()
-            if needToWriteKnownNodesToDisk:  # Runs if any nodes were new to us. Also, share those nodes with our peers.
+                break  # giving up on unpacking any more. We should still be connected however.
+            if recaddrStream == 0:
+                continue
+            if recaddrStream != self.streamNumber and recaddrStream != (self.streamNumber * 2) and recaddrStream != ((self.streamNumber * 2) + 1):  # if the embedded stream number is not in my stream or either of my child streams then ignore it. Someone might be trying funny business.
+                continue
+            try:
+                recaddrServices, = unpack('>Q', data[12 + lengthOfNumberOfAddresses + (
+                    38 * i):20 + lengthOfNumberOfAddresses + (38 * i)])
+            except Exception as err:
+                with shared.printLock:
+                   sys.stderr.write(
+                        'ERROR TRYING TO UNPACK recaddr (recaddrServices). Message: %s\n' % str(err))
+
+                break  # giving up on unpacking any more. We should still be connected however.
+
+            try:
+                recaddrPort, = unpack('>H', data[36 + lengthOfNumberOfAddresses + (
+                    38 * i):38 + lengthOfNumberOfAddresses + (38 * i)])
+            except Exception as err:
+                with shared.printLock:
+                    sys.stderr.write(
+                        'ERROR TRYING TO UNPACK recaddr (recaddrPort). Message: %s\n' % str(err))
+
+                break  # giving up on unpacking any more. We should still be connected however.
+            # print 'Within recaddr(): IP', recaddrIP, ', Port',
+            # recaddrPort, ', i', i
+            hostFromAddrMessage = socket.inet_ntoa(data[
+                                                   32 + lengthOfNumberOfAddresses + (38 * i):36 + lengthOfNumberOfAddresses + (38 * i)])
+            # print 'hostFromAddrMessage', hostFromAddrMessage
+            if data[32 + lengthOfNumberOfAddresses + (38 * i)] == '\x7F':
+                print 'Ignoring IP address in loopback range:', hostFromAddrMessage
+                continue
+            if data[32 + lengthOfNumberOfAddresses + (38 * i)] == '\x0A':
+                print 'Ignoring IP address in private range:', hostFromAddrMessage
+                continue
+            if data[32 + lengthOfNumberOfAddresses + (38 * i):34 + lengthOfNumberOfAddresses + (38 * i)] == '\xC0A8':
+                print 'Ignoring IP address in private range:', hostFromAddrMessage
+                continue
+            timeSomeoneElseReceivedMessageFromThisNode, = unpack('>Q', data[lengthOfNumberOfAddresses + (
+                38 * i):8 + lengthOfNumberOfAddresses + (38 * i)])  # This is the 'time' value in the received addr message. 64-bit.
+            if recaddrStream not in shared.knownNodes:  # knownNodes is a dictionary of dictionaries with one outer dictionary for each stream. If the outer stream dictionary doesn't exist yet then we must make it.
                 shared.knownNodesLock.acquire()
-                output = open(shared.appdata + 'knownnodes.dat', 'wb')
-                pickle.dump(shared.knownNodes, output)
-                output.close()
+                shared.knownNodes[recaddrStream] = {}
                 shared.knownNodesLock.release()
-                self.broadcastaddr(
-                    listOfAddressDetailsToBroadcastToPeers)  # no longer broadcast
-            with shared.printLock:
-                print 'knownNodes currently has', len(shared.knownNodes[self.streamNumber]), 'nodes for this stream.'
-
-        elif self.remoteProtocolVersion >= 2:  # The difference is that in protocol version 2, network addresses use 64 bit times rather than 32 bit times.
-            if numberOfAddressesIncluded > 1000 or numberOfAddressesIncluded == 0:
-                return
-            if len(data) != lengthOfNumberOfAddresses + (38 * numberOfAddressesIncluded):
-                print 'addr message does not contain the correct amount of data. Ignoring.'
-                return
-
-            needToWriteKnownNodesToDisk = False
-            for i in range(0, numberOfAddressesIncluded):
-                try:
-                    if data[20 + lengthOfNumberOfAddresses + (38 * i):32 + lengthOfNumberOfAddresses + (38 * i)] != '\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\xFF\xFF':
-                        with shared.printLock:
-                           print 'Skipping IPv6 address.', repr(data[20 + lengthOfNumberOfAddresses + (38 * i):32 + lengthOfNumberOfAddresses + (38 * i)])
-
-                        continue
-                except Exception as err:
-                    with shared.printLock:
-                       sys.stderr.write(
-                           'ERROR TRYING TO UNPACK recaddr (to test for an IPv6 address). Message: %s\n' % str(err))
-
-                    break  # giving up on unpacking any more. We should still be connected however.
-
-                try:
-                    recaddrStream, = unpack('>I', data[8 + lengthOfNumberOfAddresses + (
-                        38 * i):12 + lengthOfNumberOfAddresses + (38 * i)])
-                except Exception as err:
-                    with shared.printLock:
-                       sys.stderr.write(
-                           'ERROR TRYING TO UNPACK recaddr (recaddrStream). Message: %s\n' % str(err))
-
-                    break  # giving up on unpacking any more. We should still be connected however.
-                if recaddrStream == 0:
-                    continue
-                if recaddrStream != self.streamNumber and recaddrStream != (self.streamNumber * 2) and recaddrStream != ((self.streamNumber * 2) + 1):  # if the embedded stream number is not in my stream or either of my child streams then ignore it. Someone might be trying funny business.
-                    continue
-                try:
-                    recaddrServices, = unpack('>Q', data[12 + lengthOfNumberOfAddresses + (
-                        38 * i):20 + lengthOfNumberOfAddresses + (38 * i)])
-                except Exception as err:
-                    with shared.printLock:
-                       sys.stderr.write(
-                            'ERROR TRYING TO UNPACK recaddr (recaddrServices). Message: %s\n' % str(err))
-
-                    break  # giving up on unpacking any more. We should still be connected however.
-
-                try:
-                    recaddrPort, = unpack('>H', data[36 + lengthOfNumberOfAddresses + (
-                        38 * i):38 + lengthOfNumberOfAddresses + (38 * i)])
-                except Exception as err:
-                    with shared.printLock:
-                        sys.stderr.write(
-                            'ERROR TRYING TO UNPACK recaddr (recaddrPort). Message: %s\n' % str(err))
-
-                    break  # giving up on unpacking any more. We should still be connected however.
-                # print 'Within recaddr(): IP', recaddrIP, ', Port',
-                # recaddrPort, ', i', i
-                hostFromAddrMessage = socket.inet_ntoa(data[
-                                                       32 + lengthOfNumberOfAddresses + (38 * i):36 + lengthOfNumberOfAddresses + (38 * i)])
-                # print 'hostFromAddrMessage', hostFromAddrMessage
-                if data[32 + lengthOfNumberOfAddresses + (38 * i)] == '\x7F':
-                    print 'Ignoring IP address in loopback range:', hostFromAddrMessage
-                    continue
-                if data[32 + lengthOfNumberOfAddresses + (38 * i)] == '\x0A':
-                    print 'Ignoring IP address in private range:', hostFromAddrMessage
-                    continue
-                if data[32 + lengthOfNumberOfAddresses + (38 * i):34 + lengthOfNumberOfAddresses + (38 * i)] == '\xC0A8':
-                    print 'Ignoring IP address in private range:', hostFromAddrMessage
-                    continue
-                timeSomeoneElseReceivedMessageFromThisNode, = unpack('>Q', data[lengthOfNumberOfAddresses + (
-                    38 * i):8 + lengthOfNumberOfAddresses + (38 * i)])  # This is the 'time' value in the received addr message. 64-bit.
-                if recaddrStream not in shared.knownNodes:  # knownNodes is a dictionary of dictionaries with one outer dictionary for each stream. If the outer stream dictionary doesn't exist yet then we must make it.
+            peerFromAddrMessage = shared.Peer(hostFromAddrMessage, recaddrPort)
+            if peerFromAddrMessage not in shared.knownNodes[recaddrStream]:
+                if len(shared.knownNodes[recaddrStream]) < 20000 and timeSomeoneElseReceivedMessageFromThisNode > (int(time.time()) - 10800) and timeSomeoneElseReceivedMessageFromThisNode < (int(time.time()) + 10800):  # If we have more than 20000 nodes in our list already then just forget about adding more. Also, make sure that the time that someone else received a message from this node is within three hours from now.
                     shared.knownNodesLock.acquire()
-                    shared.knownNodes[recaddrStream] = {}
+                    shared.knownNodes[recaddrStream][peerFromAddrMessage] = (
+                        timeSomeoneElseReceivedMessageFromThisNode)
                     shared.knownNodesLock.release()
-                peerFromAddrMessage = shared.Peer(hostFromAddrMessage, recaddrPort)
-                if peerFromAddrMessage not in shared.knownNodes[recaddrStream]:
-                    if len(shared.knownNodes[recaddrStream]) < 20000 and timeSomeoneElseReceivedMessageFromThisNode > (int(time.time()) - 10800) and timeSomeoneElseReceivedMessageFromThisNode < (int(time.time()) + 10800):  # If we have more than 20000 nodes in our list already then just forget about adding more. Also, make sure that the time that someone else received a message from this node is within three hours from now.
-                        shared.knownNodesLock.acquire()
-                        shared.knownNodes[recaddrStream][peerFromAddrMessage] = (
-                            timeSomeoneElseReceivedMessageFromThisNode)
-                        shared.knownNodesLock.release()
-                        with shared.printLock:
-                            print 'added new node', peerFromAddrMessage, 'to knownNodes in stream', recaddrStream
+                    with shared.printLock:
+                        print 'added new node', peerFromAddrMessage, 'to knownNodes in stream', recaddrStream
 
-                        needToWriteKnownNodesToDisk = True
-                        hostDetails = (
-                            timeSomeoneElseReceivedMessageFromThisNode,
-                            recaddrStream, recaddrServices, hostFromAddrMessage, recaddrPort)
-                        listOfAddressDetailsToBroadcastToPeers.append(
-                            hostDetails)
-                else:
-                    timeLastReceivedMessageFromThisNode = shared.knownNodes[recaddrStream][
-                        peerFromAddrMessage]  # PORT in this case is either the port we used to connect to the remote node, or the port that was specified by someone else in a past addr message.
-                    if (timeLastReceivedMessageFromThisNode < timeSomeoneElseReceivedMessageFromThisNode) and (timeSomeoneElseReceivedMessageFromThisNode < int(time.time())):
-                        shared.knownNodesLock.acquire()
-                        shared.knownNodes[recaddrStream][peerFromAddrMessage] = timeSomeoneElseReceivedMessageFromThisNode
-                        shared.knownNodesLock.release()
-            if needToWriteKnownNodesToDisk:  # Runs if any nodes were new to us. Also, share those nodes with our peers.
-                shared.knownNodesLock.acquire()
-                output = open(shared.appdata + 'knownnodes.dat', 'wb')
-                try:
-                    pickle.dump(shared.knownNodes, output)
-                    output.close()
-                except Exception as err:
-                    if "Errno 28" in str(err):
-                        logger.fatal('(while receiveDataThread needToWriteKnownNodesToDisk) Alert: Your disk or data storage volume is full. ')
-                        shared.UISignalQueue.put(('alert', (tr.translateText("MainWindow", "Disk full"), tr.translateText("MainWindow", 'Alert: Your disk or data storage volume is full. Bitmessage will now exit.'), True)))
-                        if shared.daemon:
-                            os._exit(0)
-                shared.knownNodesLock.release()
-                self.broadcastaddr(listOfAddressDetailsToBroadcastToPeers)
-            with shared.printLock:
-                print 'knownNodes currently has', len(shared.knownNodes[self.streamNumber]), 'nodes for this stream.'
+                    shared.needToWriteKnownNodesToDisk = True
+                    hostDetails = (
+                        timeSomeoneElseReceivedMessageFromThisNode,
+                        recaddrStream, recaddrServices, hostFromAddrMessage, recaddrPort)
+                    #listOfAddressDetailsToBroadcastToPeers.append(hostDetails)
+                    shared.broadcastToSendDataQueues((
+                        self.streamNumber, 'advertisepeer', hostDetails))
+            else:
+                timeLastReceivedMessageFromThisNode = shared.knownNodes[recaddrStream][
+                    peerFromAddrMessage]  # PORT in this case is either the port we used to connect to the remote node, or the port that was specified by someone else in a past addr message.
+                if (timeLastReceivedMessageFromThisNode < timeSomeoneElseReceivedMessageFromThisNode) and (timeSomeoneElseReceivedMessageFromThisNode < int(time.time())):
+                    shared.knownNodesLock.acquire()
+                    shared.knownNodes[recaddrStream][peerFromAddrMessage] = timeSomeoneElseReceivedMessageFromThisNode
+                    shared.knownNodesLock.release()
+
+        #if listOfAddressDetailsToBroadcastToPeers != []:
+        #    self.broadcastaddr(listOfAddressDetailsToBroadcastToPeers)
+        with shared.printLock:
+            print 'knownNodes currently has', len(shared.knownNodes[self.streamNumber]), 'nodes for this stream.'
 
 
     # Function runs when we want to broadcast an addr message to all of our
     # peers. Runs when we learn of nodes that we didn't previously know about
     # and want to share them with our peers.
-    def broadcastaddr(self, listOfAddressDetailsToBroadcastToPeers):
+    """def broadcastaddr(self, listOfAddressDetailsToBroadcastToPeers):
         numberOfAddressesInAddrMessage = len(
             listOfAddressDetailsToBroadcastToPeers)
         payload = ''
@@ -1825,7 +1989,7 @@ class receiveDataThread(threading.Thread):
                 print 'Broadcasting addr with', numberOfAddressesInAddrMessage, 'entries.'
 
         shared.broadcastToSendDataQueues((
-            self.streamNumber, 'sendaddr', datatosend))
+            self.streamNumber, 'sendaddr', datatosend))"""
 
     # Send a big addr message to our peer
     def sendaddr(self):
@@ -1840,7 +2004,6 @@ class receiveDataThread(threading.Thread):
         shared.knownNodesLock.acquire()
         if len(shared.knownNodes[self.streamNumber]) > 0:
             for i in range(500):
-                random.seed()
                 peer, = random.sample(shared.knownNodes[self.streamNumber], 1)
                 if helper_generic.isHostInPrivateIPRange(peer.host):
                     continue
@@ -1848,7 +2011,6 @@ class receiveDataThread(threading.Thread):
                     self.streamNumber][peer]
         if len(shared.knownNodes[self.streamNumber * 2]) > 0:
             for i in range(250):
-                random.seed()
                 peer, = random.sample(shared.knownNodes[
                                       self.streamNumber * 2], 1)
                 if helper_generic.isHostInPrivateIPRange(peer.host):
@@ -1857,7 +2019,6 @@ class receiveDataThread(threading.Thread):
                     self.streamNumber * 2][peer]
         if len(shared.knownNodes[(self.streamNumber * 2) + 1]) > 0:
             for i in range(250):
-                random.seed()
                 peer, = random.sample(shared.knownNodes[
                                       (self.streamNumber * 2) + 1], 1)
                 if helper_generic.isHostInPrivateIPRange(peer.host):
@@ -1976,10 +2137,8 @@ class receiveDataThread(threading.Thread):
                 self.peer, self.remoteProtocolVersion)))
 
             shared.knownNodesLock.acquire()
-            shared.knownNodes[self.streamNumber][self.peer] = int(time.time())
-            output = open(shared.appdata + 'knownnodes.dat', 'wb')
-            pickle.dump(shared.knownNodes, output)
-            output.close()
+            shared.knownNodes[self.streamNumber][shared.Peer(self.peer.host, self.remoteNodeIncomingPort)] = int(time.time())
+            shared.needToWriteKnownNodesToDisk = True
             shared.knownNodesLock.release()
 
             self.sendverack()
