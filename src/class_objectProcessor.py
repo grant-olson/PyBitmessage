@@ -639,6 +639,12 @@ class objectProcessor(threading.Thread):
                 except:
                     mailingListName = ''
                 # Let us now send this message out as a broadcast
+                queryreturn = sqlQuery("SELECT label FROM addressbook WHERE address = ?", fromAddress)
+                if queryreturn == []:
+                    fullFromAddress = fromAddress
+                else:
+                    fullFromAddress = queryreturn[0][0] + " (" + fromAddress + ")"
+
                 message = 'DevTalk Mailing List.  Learn More About DevTalk -> http://bittext.ch/TUanG8v8wF\n'
                 message += 'Message ostensibly from ' + fullFromAddress + '\n'
                 message += time.strftime("%a, %Y-%m-%d %H:%M:%S UTC", time.gmtime()) + '\n\n'
