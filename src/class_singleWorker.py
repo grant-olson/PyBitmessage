@@ -8,11 +8,11 @@ from addresses import *
 import highlevelcrypto
 import proofofwork
 import sys
-from class_addressGenerator import pointMult
 import tr
 from debug import logger
 from helper_sql import *
 import helper_inbox
+from helper_generic import addDataPadding
 
 # This thread, of which there is only one, does the heavy lifting:
 # calculating POWs.
@@ -304,7 +304,7 @@ class singleWorker(threading.Thread):
             addressVersionNumber) + encodeVarint(streamNumber) + hash).digest()).digest()
         payload += doubleHashOfAddressData[32:] # the tag
         privEncryptionKey = doubleHashOfAddressData[:32]
-        pubEncryptionKey = pointMult(privEncryptionKey)
+        pubEncryptionKey = highlevelcrypto.pointMult(privEncryptionKey)
         payload += highlevelcrypto.encrypt(
             dataToEncrypt, pubEncryptionKey.encode('hex'))
 
@@ -415,7 +415,7 @@ class singleWorker(threading.Thread):
             else:
                 privEncryptionKey = doubleHashOfAddressData[:32]
 
-            pubEncryptionKey = pointMult(privEncryptionKey)
+            pubEncryptionKey = highlevelcrypto.pointMult(privEncryptionKey)
             payload += highlevelcrypto.encrypt(
                 dataToEncrypt, pubEncryptionKey.encode('hex'))
 
@@ -949,8 +949,4 @@ class singleWorker(threading.Thread):
                 pass
 
         payload = pack('>Q', nonce) + payload
-        headerData = '\xe9\xbe\xb4\xd9'  # magic bits, slighly different from Bitcoin's magic bits.
-        headerData += 'msg\x00\x00\x00\x00\x00\x00\x00\x00\x00'
-        headerData += pack('>L', len(payload))
-        headerData += hashlib.sha512(payload).digest()[:4]
-        return headerData + payload
+        return shared.CreatePacket('msg', payload)

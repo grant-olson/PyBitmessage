@@ -34,6 +34,7 @@ import hashlib
 from pyelliptic.openssl import OpenSSL
 import pickle
 import platform
+import textwrap
 import debug
 from debug import logger
 import subprocess
@@ -771,7 +772,7 @@ class MyForm(QtGui.QMainWindow):
 
             if shared.config.has_section(fromAddress):
                 fromLabel = shared.config.get(fromAddress, 'label')
-            if fromLabel == '':
+            else:
                 fromLabel = fromAddress
 
             toLabel = ''
@@ -2250,6 +2251,8 @@ class MyForm(QtGui.QMainWindow):
                 self.settingsDialogInstance.ui.checkBoxWillinglySendToMobile.isChecked()))
             shared.config.set('bitmessagesettings', 'useidenticons', str(
                 self.settingsDialogInstance.ui.checkBoxUseIdenticons.isChecked()))
+            shared.config.set('bitmessagesettings', 'replybelow', str(
+                self.settingsDialogInstance.ui.checkBoxReplyBelow.isChecked()))
                 
             lang_ind = int(self.settingsDialogInstance.ui.languageComboBox.currentIndex())
             if not languages[lang_ind] == 'other':
@@ -2580,19 +2583,22 @@ class MyForm(QtGui.QMainWindow):
             '''select message from inbox where msgid=?''', msgid)
         if queryreturn != []:
             for row in queryreturn:
-                messageAtCurrentInboxRow, = row 
+                messageText, = row
 
-        lines = messageAtCurrentInboxRow.split('\n')
-        for i in xrange(len(lines)):
+        lines = messageText.split('\n')
+        totalLines = len(lines)
+        for i in xrange(totalLines):
             if 'Message ostensibly from ' in lines[i]:
                 lines[i] = '<p style="font-size: 12px; color: grey;">%s</span></p>' % (
                     lines[i])
             elif lines[i] == '------------------------------------------------------':
                 lines[i] = '<hr>'
-        content = ''
-        for i in xrange(len(lines)):
-            content += lines[i]
-        content = content.replace('\n\n', '<br><br>')
+            elif lines[i] == '' and (i+1) < totalLines and \
+                 lines[i+1] != '------------------------------------------------------':
+                lines[i] = '<br><br>'
+        content = ' '.join(lines) # To keep the whitespace between lines
+        content = shared.fixPotentiallyInvalidUTF8Data(content)
+        content = unicode(content, 'utf-8)')
         self.ui.textEditInboxMessage.setHtml(QtCore.QString(content))
 
     def on_action_InboxMarkUnread(self):
@@ -2612,6 +2618,28 @@ class MyForm(QtGui.QMainWindow):
         # This doesn't de-select the last message if you try to mark it unread, but that doesn't interfere. Might not be necessary.
         # We could also select upwards, but then our problem would be with the topmost message.
         # self.ui.tableWidgetInbox.clearSelection() manages to mark the message as read again.
+
+    # Format predefined text on message reply.
+    def quoted_text(self, message):
+        if not shared.safeConfigGetBoolean('bitmessagesettings', 'replybelow'):
+          return '\n\n------------------------------------------------------\n' + message
+
+        quoteWrapper = textwrap.TextWrapper(replace_whitespace = False,
+                                            initial_indent = '> ',
+                                            subsequent_indent = '> ',
+                                            break_long_words = False,
+                                            break_on_hyphens = False)
+        def quote_line(line):
+            # Do quote empty lines.
+            if line == '' or line.isspace():
+                return '> '
+            # Quote already quoted lines, but do not wrap them.
+            elif line[0:2] == '> ':
+                return '> ' + line
+            # Wrap and quote lines/paragraphs new to this message.
+            else:
+                return quoteWrapper.fill(line)
+        return '\n'.join([quote_line(l) for l in message.splitlines()]) + '\n\n'
 
     def on_action_InboxReply(self):
         currentInboxRow = self.ui.tableWidgetInbox.currentRow()
@@ -2655,7 +2683,8 @@ class MyForm(QtGui.QMainWindow):
         else:
             self.ui.comboBoxSendFrom.setCurrentIndex(0)
         
-        self.ui.textEditMessage.setText('\n\n------------------------------------------------------\n' + unicode(messageAtCurrentInboxRow, 'utf-8)'))
+        quotedText = self.quoted_text(unicode(messageAtCurrentInboxRow, 'utf-8'))
+        self.ui.textEditMessage.setText(quotedText)
         if self.ui.tableWidgetInbox.item(currentInboxRow, 2).text()[0:3] in ['Re:', 'RE:']:
             self.ui.lineEditSubject.setText(
                 self.ui.tableWidgetInbox.item(currentInboxRow, 2).text())
@@ -3318,9 +3347,11 @@ class settingsDialog(QtGui.QDialog):
             shared.safeConfigGetBoolean('bitmessagesettings', 'willinglysendtomobile'))
         self.ui.checkBoxUseIdenticons.setChecked(
             shared.safeConfigGetBoolean('bitmessagesettings', 'useidenticons'))
+        self.ui.checkBoxReplyBelow.setChecked(
+            shared.safeConfigGetBoolean('bitmessagesettings', 'replybelow'))
         
         global languages 
-        languages = ['system','en','eo','fr','de','es','ru','no','ar','zh_cn','en_pirate','other']
+        languages = ['system','en','eo','fr','de','es','ru','no','ar','zh_cn','ja','nl','en_pirate','other']
         user_countrycode = str(shared.config.get('bitmessagesettings', 'userlocale'))
         if user_countrycode in languages:
             curr_index = languages.index(user_countrycode)
