@@ -25,6 +25,7 @@ import shared
 import ConfigParser
 from addresses import *
 from pyelliptic.openssl import OpenSSL
+import l10n
 
 quit = False
 menutab = 1
@@ -210,7 +211,7 @@ def drawtab(stdscr):
                     stdscr.addstr(8+i, 18, str(item).ljust(2))
             
             # Uptime and processing data
-            stdscr.addstr(6, 35, "Since startup on "+unicode(strftime(shared.config.get('bitmessagesettings', 'timeformat'), localtime(int(startuptime)))))
+            stdscr.addstr(6, 35, "Since startup on "+l10n.formatTimestamp(startuptime, False))
             stdscr.addstr(7, 40, "Processed "+str(shared.numberOfMessagesProcessed).ljust(4)+" person-to-person messages.")
             stdscr.addstr(8, 40, "Processed "+str(shared.numberOfBroadcastsProcessed).ljust(4)+" broadcast messages.")
             stdscr.addstr(9, 40, "Processed "+str(shared.numberOfPubkeysProcessed).ljust(4)+" public keys.")
@@ -741,6 +742,8 @@ def sendMessage(sender="", recv="", broadcast=None, subject="", body="", reply=F
                         err += "Some data encoded in the address is too short. There might be something wrong with the software of your acquaintance."
                     elif status == "ripetoolong":
                         err += "Some data encoded in the address is too long. There might be something wrong with the software of your acquaintance."
+                    elif status == "varintmalformed":
+                        err += "Some data encoded in the address is malformed. There might be something wrong with the software of your acquaintance."
                     else:
                         err += "It is unknown what is wrong with the address."
                     d.scrollbox(unicode(err), exit_label="Continue")
@@ -851,8 +854,7 @@ def loadInbox():
         
         # Load into array
         inbox.append([msgid, tolabel, toaddr, fromlabel, fromaddr, subject,
-            strftime(shared.config.get('bitmessagesettings', 'timeformat'), localtime(int(received))),
-            read])
+            l10n.formatTimestamp(received, False), read])
     inbox.reverse()
 def loadSent():
     sys.stdout = sys.__stdout__
@@ -902,20 +904,20 @@ def loadSent():
         elif status == "msgqueued":
             statstr = "Message queued"
         elif status == "msgsent":
-            t = strftime(shared.config.get('bitmessagesettings', 'timeformat'), localtime(int(lastactiontime)))
+            t = l10n.formatTimestamp(lastactiontime, False)
             statstr = "Message sent at "+t+".Waiting for acknowledgement."
         elif status == "msgsentnoackexpected":
-            t = strftime(shared.config.get('bitmessagesettings', 'timeformat'), localtime(int(lastactiontime)))
+            t = l10n.formatTimestamp(lastactiontime, False)
             statstr = "Message sent at "+t+"."
         elif status == "doingmsgpow":
             statstr = "The proof of work required to send the message has been queued."
         elif status == "askreceived":
-            t = strftime(shared.config.get('bitmessagesettings', 'timeformat'), localtime(int(lastactiontime)))
+            t = l10n.formatTimestamp(lastactiontime, False)
             statstr = "Acknowledgment of the message received at "+t+"."
         elif status == "broadcastqueued":
             statstr = "Broadcast queued."
         elif status == "broadcastsent":
-            t = strftime(shared.config.get('bitmessagesettings', 'timeformat'), localtime(int(lastactiontime)))
+            t = l10n.formatTimestamp(lastactiontime, False)
             statstr = "Broadcast sent at "+t+"."
         elif status == "forcepow":
             statstr = "Forced difficulty override. Message will start sending soon."
@@ -924,12 +926,12 @@ def loadSent():
         elif status == "toodifficult":
             statstr = "Error: The work demanded by the recipient is more difficult than you are willing to do."
         else:
-            t = strftime(shared.config.get('bitmessagesettings', 'timeformat'), localtime(int(lastactiontime)))
+            t = l10n.formatTimestamp(lastactiontime, False)
             statstr = "Unknown status "+status+" at "+t+"."
         
         # Load into array
         sentbox.append([tolabel, toaddr, fromlabel, fromaddr, subject, statstr, ackdata,
-            strftime(shared.config.get('bitmessagesettings', 'timeformat'), localtime(int(lastactiontime)))])
+            l10n.formatTimestamp(lastactiontime, False)])
     sentbox.reverse()
 def loadAddrBook():
     sys.stdout = sys.__stdout__

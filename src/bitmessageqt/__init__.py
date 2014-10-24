@@ -1,8 +1,3 @@
-try:
-    import locale
-except:
-    pass
-
 withMessagingMenu = False
 try:
     from gi.repository import MessagingMenu
@@ -40,6 +35,7 @@ from debug import logger
 import subprocess
 import datetime
 from helper_sql import *
+import l10n
 
 try:
     from PyQt4 import QtCore, QtGui
@@ -482,6 +478,10 @@ class MyForm(QtGui.QMainWindow):
             # startup for linux
             pass
 
+
+        self.totalNumberOfBytesReceived = 0
+        self.totalNumberOfBytesSent = 0
+        
         self.ui.labelSendBroadcastWarning.setVisible(False)
 
         self.timer = QtCore.QTimer()
@@ -574,7 +574,7 @@ class MyForm(QtGui.QMainWindow):
         self.statusbar = self.statusBar()
         self.statusbar.insertPermanentWidget(0, self.ui.pushButtonStatusIcon)
         self.ui.labelStartupTime.setText(_translate("MainWindow", "Since startup on %1").arg(
-            unicode(strftime(shared.config.get('bitmessagesettings', 'timeformat'), localtime(int(time.time()))),'utf-8')))
+            l10n.formatTimestamp()))
         self.numberOfMessagesProcessed = 0
         self.numberOfBroadcastsProcessed = 0
         self.numberOfPubkeysProcessed = 0
@@ -833,34 +833,34 @@ class MyForm(QtGui.QMainWindow):
                     "MainWindow", "Queued.")
             elif status == 'msgsent':
                 statusText = _translate("MainWindow", "Message sent. Waiting for acknowledgement. Sent at %1").arg(
-                    unicode(strftime(shared.config.get('bitmessagesettings', 'timeformat'), localtime(lastactiontime)),'utf-8'))
+                    l10n.formatTimestamp(lastactiontime))
             elif status == 'msgsentnoackexpected':
                 statusText = _translate("MainWindow", "Message sent. Sent at %1").arg(
-                    unicode(strftime(shared.config.get('bitmessagesettings', 'timeformat'), localtime(lastactiontime)),'utf-8'))
+                    l10n.formatTimestamp(lastactiontime))
             elif status == 'doingmsgpow':
                 statusText = _translate(
                     "MainWindow", "Need to do work to send message. Work is queued.")
             elif status == 'ackreceived':
                 statusText = _translate("MainWindow", "Acknowledgement of the message received %1").arg(
-                    unicode(strftime(shared.config.get('bitmessagesettings', 'timeformat'), localtime(lastactiontime)),'utf-8'))
+                    l10n.formatTimestamp(lastactiontime))
             elif status == 'broadcastqueued':
                 statusText = _translate(
                     "MainWindow", "Broadcast queued.")
             elif status == 'broadcastsent':
-                statusText = _translate("MainWindow", "Broadcast on %1").arg(unicode(strftime(
-                    shared.config.get('bitmessagesettings', 'timeformat'), localtime(lastactiontime)),'utf-8'))
+                statusText = _translate("MainWindow", "Broadcast on %1").arg(
+                    l10n.formatTimestamp(lastactiontime))
             elif status == 'toodifficult':
                 statusText = _translate("MainWindow", "Problem: The work demanded by the recipient is more difficult than you are willing to do. %1").arg(
-                    unicode(strftime(shared.config.get('bitmessagesettings', 'timeformat'), localtime(lastactiontime)),'utf-8'))
+                    l10n.formatTimestamp(lastactiontime))
             elif status == 'badkey':
                 statusText = _translate("MainWindow", "Problem: The recipient\'s encryption key is no good. Could not encrypt message. %1").arg(
-                    unicode(strftime(shared.config.get('bitmessagesettings', 'timeformat'), localtime(lastactiontime)),'utf-8'))
+                    l10n.formatTimestamp(lastactiontime))
             elif status == 'forcepow':
                 statusText = _translate(
                     "MainWindow", "Forced difficulty override. Send should start soon.")
             else:
-                statusText = _translate("MainWindow", "Unknown status: %1 %2").arg(status).arg(unicode(
-                    strftime(shared.config.get('bitmessagesettings', 'timeformat'), localtime(lastactiontime)),'utf-8'))
+                statusText = _translate("MainWindow", "Unknown status: %1 %2").arg(status).arg(
+                    l10n.formatTimestamp(lastactiontime))
             newItem = myTableWidgetItem(statusText)
             newItem.setToolTip(statusText)
             newItem.setData(Qt.UserRole, QByteArray(ackdata))
@@ -967,10 +967,8 @@ class MyForm(QtGui.QMainWindow):
                 subject_item.setFont(font)
             self.ui.tableWidgetInbox.setItem(0, 2, subject_item)
             # time received
-            time_item = myTableWidgetItem(unicode(strftime(shared.config.get(
-                'bitmessagesettings', 'timeformat'), localtime(int(received))), 'utf-8'))
-            time_item.setToolTip(unicode(strftime(shared.config.get(
-                'bitmessagesettings', 'timeformat'), localtime(int(received))), 'utf-8'))
+            time_item = myTableWidgetItem(l10n.formatTimestamp(received))
+            time_item.setToolTip(l10n.formatTimestamp(received))
             time_item.setData(Qt.UserRole, QByteArray(msgid))
             time_item.setData(33, int(received))
             time_item.setFlags(
@@ -1348,26 +1346,23 @@ class MyForm(QtGui.QMainWindow):
             if self.regenerateAddressesDialogInstance.ui.lineEditPassphrase.text() == "":
                 QMessageBox.about(self, _translate("MainWindow", "bad passphrase"), _translate(
                     "MainWindow", "You must type your passphrase. If you don\'t have one then this is not the form for you."))
-            else:
-                streamNumberForAddress = int(
-                    self.regenerateAddressesDialogInstance.ui.lineEditStreamNumber.text())
-                try:
-                    addressVersionNumber = int(
-                        self.regenerateAddressesDialogInstance.ui.lineEditAddressVersionNumber.text())
-                except:
-                    QMessageBox.about(self, _translate("MainWindow", "Bad address version number"), _translate(
-                        "MainWindow", "Your address version number must be a number: either 3 or 4."))
-                if addressVersionNumber < 3 or addressVersionNumber > 4:
-                    QMessageBox.about(self, _translate("MainWindow", "Bad address version number"), _translate(
-                        "MainWindow", "Your address version number must be either 3 or 4."))
-                # self.addressGenerator = addressGenerator()
-                # self.addressGenerator.setup(addressVersionNumber,streamNumberForAddress,"unused address",self.regenerateAddressesDialogInstance.ui.spinBoxNumberOfAddressesToMake.value(),self.regenerateAddressesDialogInstance.ui.lineEditPassphrase.text().toUtf8(),self.regenerateAddressesDialogInstance.ui.checkBoxEighteenByteRipe.isChecked())
-                # QtCore.QObject.connect(self.addressGenerator, SIGNAL("writeNewAddressToTable(PyQt_PyObject,PyQt_PyObject,PyQt_PyObject)"), self.writeNewAddressToTable)
-                # QtCore.QObject.connect(self.addressGenerator, QtCore.SIGNAL("updateStatusBar(PyQt_PyObject)"), self.updateStatusBar)
-                # self.addressGenerator.start()
-                shared.addressGeneratorQueue.put(('createDeterministicAddresses', addressVersionNumber, streamNumberForAddress, "regenerated deterministic address", self.regenerateAddressesDialogInstance.ui.spinBoxNumberOfAddressesToMake.value(
-                ), self.regenerateAddressesDialogInstance.ui.lineEditPassphrase.text().toUtf8(), self.regenerateAddressesDialogInstance.ui.checkBoxEighteenByteRipe.isChecked()))
-                self.ui.tabWidget.setCurrentIndex(3)
+                return
+            streamNumberForAddress = int(
+                self.regenerateAddressesDialogInstance.ui.lineEditStreamNumber.text())
+            try:
+                addressVersionNumber = int(
+                    self.regenerateAddressesDialogInstance.ui.lineEditAddressVersionNumber.text())
+            except:
+                QMessageBox.about(self, _translate("MainWindow", "Bad address version number"), _translate(
+                    "MainWindow", "Your address version number must be a number: either 3 or 4."))
+                return
+            if addressVersionNumber < 3 or addressVersionNumber > 4:
+                QMessageBox.about(self, _translate("MainWindow", "Bad address version number"), _translate(
+                    "MainWindow", "Your address version number must be either 3 or 4."))
+                return
+            shared.addressGeneratorQueue.put(('createDeterministicAddresses', addressVersionNumber, streamNumberForAddress, "regenerated deterministic address", self.regenerateAddressesDialogInstance.ui.spinBoxNumberOfAddressesToMake.value(
+            ), self.regenerateAddressesDialogInstance.ui.lineEditPassphrase.text().toUtf8(), self.regenerateAddressesDialogInstance.ui.checkBoxEighteenByteRipe.isChecked()))
+            self.ui.tabWidget.setCurrentIndex(3)
 
     def click_actionJoinChan(self):
         self.newChanDialogInstance = newChanDialog(self)
@@ -1468,6 +1463,31 @@ class MyForm(QtGui.QMainWindow):
         self.ui.labelPubkeyCount.setText(_translate(
             "MainWindow", "Processed %1 public keys.").arg(str(shared.numberOfPubkeysProcessed)))
 
+    def formatBytes(self, num):
+        for x in ['bytes','KB','MB','GB']:
+            if num < 1000.0:
+                return "%3.0f %s" % (num, x)
+            num /= 1000.0
+        return "%3.0f %s" % (num, 'TB')
+    
+    def formatByteRate(self, num):
+        num /= 1000
+        return "%4.0f KB" % num
+
+    def updateNumberOfBytes(self):
+        """
+        This function is run every two seconds, so we divide the rate of bytes
+        sent and received by 2.
+        """
+        self.ui.labelBytesRecvCount.setText(_translate(
+            "MainWindow", "Down: %1/s  Total: %2").arg(self.formatByteRate(shared.numberOfBytesReceived/2), self.formatBytes(self.totalNumberOfBytesReceived)))
+        self.ui.labelBytesSentCount.setText(_translate(
+            "MainWindow", "Up: %1/s  Total: %2").arg(self.formatByteRate(shared.numberOfBytesSent/2), self.formatBytes(self.totalNumberOfBytesSent)))
+        self.totalNumberOfBytesReceived += shared.numberOfBytesReceived
+        self.totalNumberOfBytesSent += shared.numberOfBytesSent
+        shared.numberOfBytesReceived = 0
+        shared.numberOfBytesSent = 0
+
     def updateNetworkStatusTab(self):
         # print 'updating network status tab'
         totalNumberOfConnectionsFromAllStreams = 0  # One would think we could use len(sendDataQueues) for this but the number doesn't always match: just because we have a sendDataThread running doesn't mean that the connection has been fully established (with the exchange of version messages).
@@ -1521,6 +1541,7 @@ class MyForm(QtGui.QMainWindow):
         self.ui.labelLookupsPerSecond.setText(_translate(
             "MainWindow", "Inventory lookups per second: %1").arg(str(shared.numberOfInventoryLookupsPerformed/2)))
         shared.numberOfInventoryLookupsPerformed = 0
+        self.updateNumberOfBytes()
 
     # Indicates whether or not there is a connection to the Bitmessage network
     connected = False
@@ -1818,6 +1839,17 @@ class MyForm(QtGui.QMainWindow):
         subject = str(self.ui.lineEditSubject.text().toUtf8())
         message = str(
             self.ui.textEditMessage.document().toPlainText().toUtf8())
+        """
+        The whole network message must fit in 2^18 bytes. Let's assume 500 
+        bytes of overhead. If someone wants to get that too an exact 
+        number you are welcome to but I think that it would be a better
+        use of time to support message continuation so that users can
+        send messages of any length.
+        """
+        if len(message) > (2 ** 18 - 500):  
+            QMessageBox.about(self, _translate("MainWindow", "Message too long"), _translate(
+                "MainWindow", "The message that you are trying to send is too long by %1 bytes. (The maximum is 261644 bytes). Please cut it down before sending.").arg(len(message) - (2 ** 18 - 500)))
+            return
         if self.ui.radioButtonSpecific.isChecked():  # To send a message to specific people (rather than broadcast)
             toAddressesList = [s.strip()
                                for s in toAddresses.replace(',', ';').split(';')]
@@ -1849,6 +1881,9 @@ class MyForm(QtGui.QMainWindow):
                         elif status == 'ripetoolong':
                             self.statusBar().showMessage(_translate(
                                 "MainWindow", "Error: Some data encoded in the address %1 is too long. There might be something wrong with the software of your acquaintance.").arg(toAddress))
+                        elif status == 'varintmalformed':
+                            self.statusBar().showMessage(_translate(
+                                "MainWindow", "Error: Some data encoded in the address %1 is malformed. There might be something wrong with the software of your acquaintance.").arg(toAddress))
                         else:
                             self.statusBar().showMessage(_translate(
                                 "MainWindow", "Error: Something is wrong with the address %1.").arg(toAddress))
@@ -2032,12 +2067,9 @@ class MyForm(QtGui.QMainWindow):
         self.ui.tableWidgetSent.setItem(0, 2, newItem)
         # newItem =  QtGui.QTableWidgetItem('Doing work necessary to send
         # broadcast...'+
-        # unicode(strftime(shared.config.get('bitmessagesettings',
-        # 'timeformat'),localtime(int(time.time()))),'utf-8'))
-        newItem = myTableWidgetItem(_translate("MainWindow", "Work is queued. %1").arg(unicode(strftime(shared.config.get(
-            'bitmessagesettings', 'timeformat'), localtime(int(time.time()))), 'utf-8')))
-        newItem.setToolTip(_translate("MainWindow", "Work is queued. %1").arg(unicode(strftime(shared.config.get(
-            'bitmessagesettings', 'timeformat'), localtime(int(time.time()))), 'utf-8')))
+        # l10n.formatTimestamp())
+        newItem = myTableWidgetItem(_translate("MainWindow", "Work is queued. %1").arg(l10n.formatTimestamp()))
+        newItem.setToolTip(_translate("MainWindow", "Work is queued. %1").arg(l10n.formatTimestamp()))
         newItem.setData(Qt.UserRole, QByteArray(ackdata))
         newItem.setData(33, int(time.time()))
         self.ui.tableWidgetSent.setItem(0, 3, newItem)
@@ -2104,10 +2136,8 @@ class MyForm(QtGui.QMainWindow):
         #newItem.setData(Qt.UserRole, unicode(message, 'utf-8)')) # No longer hold the message in the table; we'll use a SQL query to display it as needed.
         newItem.setFont(font)
         self.ui.tableWidgetInbox.setItem(0, 2, newItem)
-        newItem = myTableWidgetItem(unicode(strftime(shared.config.get(
-            'bitmessagesettings', 'timeformat'), localtime(int(time.time()))), 'utf-8'))
-        newItem.setToolTip(unicode(strftime(shared.config.get(
-            'bitmessagesettings', 'timeformat'), localtime(int(time.time()))), 'utf-8'))
+        newItem = myTableWidgetItem(l10n.formatTimestamp())
+        newItem.setToolTip(l10n.formatTimestamp())
         newItem.setData(Qt.UserRole, QByteArray(inventoryHash))
         newItem.setData(33, int(time.time()))
         newItem.setFont(font)
@@ -2192,10 +2222,10 @@ class MyForm(QtGui.QMainWindow):
                     addressVersion) + encodeVarint(streamNumber) + ripe).digest()).digest()
                 tag = doubleHashOfAddressData[32:]
                 queryreturn = sqlQuery(
-                    '''select payload from inventory where objecttype='broadcast' and tag=?''', tag)
+                    '''select payload from inventory where objecttype=3 and tag=?''', tag)
                 for row in queryreturn:
                     payload, = row
-                    objectType = 'broadcast'
+                    objectType = 3
                     with shared.objectProcessorQueueSizeLock:
                         shared.objectProcessorQueueSize += len(payload)
                         shared.objectProcessorQueue.put((objectType,payload))
@@ -2289,6 +2319,15 @@ class MyForm(QtGui.QMainWindow):
                 self.settingsDialogInstance.ui.lineEditSocksPassword.text()))
             shared.config.set('bitmessagesettings', 'sockslisten', str(
                 self.settingsDialogInstance.ui.checkBoxSocksListen.isChecked()))
+            try:
+                # Rounding to integers just for aesthetics
+                shared.config.set('bitmessagesettings', 'maxdownloadrate', str(
+                    int(float(self.settingsDialogInstance.ui.lineEditMaxDownloadRate.text()))))
+                shared.config.set('bitmessagesettings', 'maxuploadrate', str(
+                    int(float(self.settingsDialogInstance.ui.lineEditMaxUploadRate.text()))))
+            except:
+                QMessageBox.about(self, _translate("MainWindow", "Number needed"), _translate(
+                    "MainWindow", "Your maximum download and upload rate must be numbers. Ignoring what you typed."))
 
             shared.config.set('bitmessagesettings', 'namecoinrpctype',
                 self.settingsDialogInstance.getNamecoinType())
@@ -2300,19 +2339,39 @@ class MyForm(QtGui.QMainWindow):
                 self.settingsDialogInstance.ui.lineEditNamecoinUser.text()))
             shared.config.set('bitmessagesettings', 'namecoinrpcpassword', str(
                 self.settingsDialogInstance.ui.lineEditNamecoinPassword.text()))
-
+            
+            # Demanded difficulty tab
             if float(self.settingsDialogInstance.ui.lineEditTotalDifficulty.text()) >= 1:
                 shared.config.set('bitmessagesettings', 'defaultnoncetrialsperbyte', str(int(float(
                     self.settingsDialogInstance.ui.lineEditTotalDifficulty.text()) * shared.networkDefaultProofOfWorkNonceTrialsPerByte)))
             if float(self.settingsDialogInstance.ui.lineEditSmallMessageDifficulty.text()) >= 1:
                 shared.config.set('bitmessagesettings', 'defaultpayloadlengthextrabytes', str(int(float(
                     self.settingsDialogInstance.ui.lineEditSmallMessageDifficulty.text()) * shared.networkDefaultPayloadLengthExtraBytes)))
+
+            acceptableDifficultyChanged = False
+            
             if float(self.settingsDialogInstance.ui.lineEditMaxAcceptableTotalDifficulty.text()) >= 1 or float(self.settingsDialogInstance.ui.lineEditMaxAcceptableTotalDifficulty.text()) == 0:
-                shared.config.set('bitmessagesettings', 'maxacceptablenoncetrialsperbyte', str(int(float(
-                    self.settingsDialogInstance.ui.lineEditMaxAcceptableTotalDifficulty.text()) * shared.networkDefaultProofOfWorkNonceTrialsPerByte)))
+                if shared.config.get('bitmessagesettings','maxacceptablenoncetrialsperbyte') != str(int(float(
+                    self.settingsDialogInstance.ui.lineEditMaxAcceptableTotalDifficulty.text()) * shared.networkDefaultProofOfWorkNonceTrialsPerByte)):
+                    # the user changed the max acceptable total difficulty
+                    acceptableDifficultyChanged = True
+                    shared.config.set('bitmessagesettings', 'maxacceptablenoncetrialsperbyte', str(int(float(
+                        self.settingsDialogInstance.ui.lineEditMaxAcceptableTotalDifficulty.text()) * shared.networkDefaultProofOfWorkNonceTrialsPerByte)))
             if float(self.settingsDialogInstance.ui.lineEditMaxAcceptableSmallMessageDifficulty.text()) >= 1 or float(self.settingsDialogInstance.ui.lineEditMaxAcceptableSmallMessageDifficulty.text()) == 0:
-                shared.config.set('bitmessagesettings', 'maxacceptablepayloadlengthextrabytes', str(int(float(
-                    self.settingsDialogInstance.ui.lineEditMaxAcceptableSmallMessageDifficulty.text()) * shared.networkDefaultPayloadLengthExtraBytes)))
+                if shared.config.get('bitmessagesettings','maxacceptablepayloadlengthextrabytes') != str(int(float(
+                    self.settingsDialogInstance.ui.lineEditMaxAcceptableSmallMessageDifficulty.text()) * shared.networkDefaultPayloadLengthExtraBytes)):
+                    # the user changed the max acceptable small message difficulty
+                    acceptableDifficultyChanged = True
+                    shared.config.set('bitmessagesettings', 'maxacceptablepayloadlengthextrabytes', str(int(float(
+                        self.settingsDialogInstance.ui.lineEditMaxAcceptableSmallMessageDifficulty.text()) * shared.networkDefaultPayloadLengthExtraBytes)))
+            if acceptableDifficultyChanged:
+                # It might now be possible to send msgs which were previously marked as toodifficult. 
+                # Let us change them to 'msgqueued'. The singleWorker will try to send them and will again
+                # mark them as toodifficult if the receiver's required difficulty is still higher than
+                # we are willing to do.
+                sqlExecute('''UPDATE sent SET status='msgqueued' WHERE status='toodifficult' ''')
+                shared.workerQueue.put(('sendmessage', ''))
+            
             #start:UI setting to stop trying to send messages after X days/months
             # I'm open to changing this UI to something else if someone has a better idea.
             if ((self.settingsDialogInstance.ui.lineEditDays.text()=='') and (self.settingsDialogInstance.ui.lineEditMonths.text()=='')):#We need to handle this special case. Bitmessage has its default behavior. The input is blank/blank
@@ -3410,7 +3469,12 @@ class settingsDialog(QtGui.QDialog):
             shared.config.get('bitmessagesettings', 'sockspassword')))
         QtCore.QObject.connect(self.ui.comboBoxProxyType, QtCore.SIGNAL(
             "currentIndexChanged(int)"), self.comboBoxProxyTypeChanged)
+        self.ui.lineEditMaxDownloadRate.setText(str(
+            shared.config.get('bitmessagesettings', 'maxdownloadrate')))
+        self.ui.lineEditMaxUploadRate.setText(str(
+            shared.config.get('bitmessagesettings', 'maxuploadrate')))
 
+        # Demanded difficulty tab
         self.ui.lineEditTotalDifficulty.setText(str((float(shared.config.getint(
             'bitmessagesettings', 'defaultnoncetrialsperbyte')) / shared.networkDefaultProofOfWorkNonceTrialsPerByte)))
         self.ui.lineEditSmallMessageDifficulty.setText(str((float(shared.config.getint(
@@ -3601,6 +3665,9 @@ class AddAddressDialog(QtGui.QDialog):
         elif status == 'ripetoolong':
             self.ui.labelAddressCheck.setText(_translate(
                 "MainWindow", "Some data encoded in the address is too long."))
+        elif status == 'varintmalformed':
+            self.ui.labelAddressCheck.setText(_translate(
+                "MainWindow", "Some data encoded in the address is malformed."))
         elif status == 'success':
             self.ui.labelAddressCheck.setText(
                 _translate("MainWindow", "Address is valid."))
@@ -3639,6 +3706,9 @@ class NewSubscriptionDialog(QtGui.QDialog):
         elif status == 'ripetoolong':
             self.ui.labelAddressCheck.setText(_translate(
                 "MainWindow", "Some data encoded in the address is too long."))
+        elif status == 'varintmalformed':
+            self.ui.labelAddressCheck.setText(_translate(
+                "MainWindow", "Some data encoded in the address is malformed."))
         elif status == 'success':
             self.ui.labelAddressCheck.setText(
                 _translate("MainWindow", "Address is valid."))
@@ -3651,7 +3721,7 @@ class NewSubscriptionDialog(QtGui.QDialog):
                     addressVersion) + encodeVarint(streamNumber) + ripe).digest()).digest()
                 tag = doubleHashOfAddressData[32:]
                 queryreturn = sqlQuery(
-                    '''select hash from inventory where objecttype='broadcast' and tag=?''', tag)
+                    '''select hash from inventory where objecttype=3 and tag=?''', tag)
                 if len(queryreturn) == 0:
                     self.ui.checkBoxDisplayMessagesAlreadyInInventory.setText(
                         _translate("MainWindow", "There are no recent broadcasts from this address to display."))
@@ -3781,52 +3851,12 @@ def run():
     app = QtGui.QApplication(sys.argv)
     translator = QtCore.QTranslator()
     
-    try:
-        locale_countrycode = str(locale.getdefaultlocale()[0])
-    except:
-        # The above is not compatible with all versions of OSX.
-        locale_countrycode = "en_US" # Default to english.
-    locale_lang = locale_countrycode[0:2]
-    user_countrycode = str(shared.config.get('bitmessagesettings', 'userlocale'))
-    user_lang = user_countrycode[0:2]
-    try:
-        translation_path = os.path.join(sys._MEIPASS, "translations/bitmessage_")
-    except Exception, e:
-        translation_path = "translations/bitmessage_"
-    
-    if shared.config.get('bitmessagesettings', 'userlocale') == 'system':
-        # try to detect the users locale otherwise fallback to English
-        try:
-            # try the users full locale, e.g. 'en_US':
-            # since we usually only provide languages, not localozations
-            # this will usually fail
-            translator.load(translation_path + locale_countrycode)
-        except:
-            try:
-                # try the users locale language, e.g. 'en':
-                # since we usually only provide languages, not localozations
-                # this will usually succeed
-                translator.load(translation_path + locale_lang)
-            except:
-                # as English is already the default language, we don't
-                # need to do anything. No need to translate.
-                pass
-    else:
-        try:
-            # check if the user input is a valid translation file:
-            # since user_countrycode will be usually set by the combobox
-            # it will usually just be a language code
-            translator.load(translation_path + user_countrycode)
-        except:
-            try:
-                # check if the user lang is a valid translation file:
-                # this is only needed if the user manually set his 'userlocale'
-                # in the keys.dat to a countrycode (e.g. 'de_CH')
-                translator.load(translation_path + user_lang)
-            except:
-                # as English is already the default language, we don't
-                # need to do anything. No need to translate.
-                pass
+    translationpath = os.path.join(
+        getattr(sys, '_MEIPASS', ''),
+        'translations',
+        'bitmessage_' + l10n.getTranslationLanguage()
+    )
+    translator.load(translationpath)
 
     QtGui.QApplication.installTranslator(translator)
     app.setStyleSheet("QStatusBar::item { border: 0px solid black }")
